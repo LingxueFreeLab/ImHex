@@ -3,6 +3,16 @@
 #include <cstdio>
 #include <codecvt>
 #include <locale>
+#include <filesystem>
+
+#if defined(OS_WINDOWS)
+    #include <windows.h>
+    #include <shlobj.h>
+#elif defined(OS_MACOS)
+    #include <hex/helpers/utils_mac.h>
+#elif defined(OS_LINUX)
+    #include <xdg.hpp>
+#endif
 
 namespace hex {
 
@@ -50,7 +60,7 @@ namespace hex {
                 break;
         }
 
-        std::string result = hex::format("%.2f", value);
+        std::string result = hex::format("{0:.2f}", value);
 
         switch (unitIndex) {
             case 0: result += " Bytes"; break;
@@ -117,26 +127,36 @@ namespace hex {
             res.push_back(token);
         }
 
-        res.push_back(std::string(string.substr(start)));
+        res.emplace_back(string.substr(start));
         return res;
     }
 
+    std::string combineStrings(const std::vector<std::string> &strings, std::string_view delimiter) {
+        std::string result;
+        for (const auto &string : strings) {
+            result += string;
+            result += delimiter;
+        }
+
+        return result.substr(0, result.length() - delimiter.length());
+    }
+
     std::string toEngineeringString(double value) {
-        constexpr std::array prefixes = { "a", "f", "p", "n", "u", "m", "", "k", "M", "G", "T", "P", "E" };
+        constexpr std::array Suffixes = { "a", "f", "p", "n", "u", "m", "", "k", "M", "G", "T", "P", "E" };
 
-        int8_t prefixIndex = 6;
+        int8_t suffixIndex = 6;
 
-        while (prefixIndex != 0 && prefixIndex != 12 && (value >= 1000 || value < 1) && value != 0) {
+        while (suffixIndex != 0 && suffixIndex != 12 && (value >= 1000 || value < 1) && value != 0) {
             if (value >= 1000) {
                 value /= 1000;
-                prefixIndex++;
+                suffixIndex++;
             } else if (value < 1) {
                 value *= 1000;
-                prefixIndex--;
+                suffixIndex--;
             }
         }
 
-        return std::to_string(value).substr(0, 5) + prefixes[prefixIndex];
+        return std::to_string(value).substr(0, 5) + Suffixes[suffixIndex];
     }
 
     std::vector<u8> readFile(std::string_view path) {
@@ -158,15 +178,105 @@ namespace hex {
     void openWebpage(std::string_view url) {
 
         #if defined(OS_WINDOWS)
-            system(hex::format("start %s", url.data()).c_str());
+            system(hex::format("start {0}", url.data()).c_str());
         #elif defined(OS_MACOS)
-            system(hex::format("open %s", url.data()).c_str());
+            system(hex::format("open {0}", url.data()).c_str());
         #elif defined(OS_LINUX)
-            system(hex::format("xdg-open %s", url.data()).c_str());
+            system(hex::format("xdg-open {0}", url.data()).c_str());
         #else
             #warning "Unknown OS, can't open webpages"
         #endif
 
+    }
+
+    std::vector<std::string> getPath(ImHexPath path) {
+        #if defined(OS_WINDOWS)
+            std::string exePath(MAX_PATH, '\0');
+            GetModuleFileName(nullptr, exePath.data(), exePath.length());
+            auto parentDir = std::filesystem::path(exePath).parent_path();
+
+            std::filesystem::path appDataDir;
+            {
+                LPWSTR wAppDataPath = nullptr;
+                if (!SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &wAppDataPath)))
+                    throw std::runtime_error("Failed to get APPDATA folder path");
+
+                appDataDir = wAppDataPath;
+                CoTaskMemFree(wAppDataPath);
+            }
+
+            switch (path) {
+                case ImHexPath::Patterns:
+                    return { (parentDir / "patterns").string() };
+                case ImHexPath::PatternsInclude:
+                    return { (parentDir / "includes").string() };
+                case ImHexPath::Magic:
+                    return { (parentDir / "magic").string() };
+                case ImHexPath::Python:
+                    return { parentDir.string() };
+                case ImHexPath::Plugins:
+                    return { (parentDir / "plugins").string() };
+                case ImHexPath::Yara:
+                    return { (parentDir / "yara").string() };
+                case ImHexPath::Config:
+                    return { (appDataDir / "imhex" / "config").string() };
+                case ImHexPath::Resources:
+                    return { (parentDir / "resources").string() };
+                case ImHexPath::Constants:
+                    return { (parentDir / "constants").string() };
+                default: __builtin_unreachable();
+            }
+        #elif defined(OS_MACOS)
+            return { getPathForMac(path) };
+        #else
+            std::vector<std::filesystem::path> configDirs = xdg::ConfigDirs();
+            std::vector<std::filesystem::path> dataDirs = xdg::DataDirs();
+
+            configDirs.insert(configDirs.begin(), xdg::ConfigHomeDir());
+            dataDirs.insert(dataDirs.begin(), xdg::DataHomeDir());
+
+            std::vector<std::string> result;
+
+            switch (path) {
+                case ImHexPath::Patterns:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "patterns").string(); });
+                    return result;
+                case ImHexPath::PatternsInclude:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "includes").string(); });
+                    return result;
+                case ImHexPath::Magic:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "magic").string(); });
+                    return result;
+                case ImHexPath::Python:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex").string(); });
+                    return result;
+                case ImHexPath::Plugins:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "plugins").string(); });
+                    return result;
+                case ImHexPath::Yara:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "yara").string(); });
+                    return result;
+                case ImHexPath::Config:
+                    std::transform(configDirs.begin(), configDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex").string(); });
+                    return result;
+                case ImHexPath::Resources:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "resources").string(); });
+                    return result;
+                case ImHexPath::Constants:
+                    std::transform(dataDirs.begin(), dataDirs.end(), std::back_inserter(result),
+                        [](auto p) { return (p / "imhex" / "constants").string(); });
+                    return result;
+                default: __builtin_unreachable();
+            }
+        #endif
     }
 
 }

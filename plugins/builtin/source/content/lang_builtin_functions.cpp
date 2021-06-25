@@ -40,7 +40,7 @@ namespace hex::plugin::builtin {
                        continue;
                    }
 
-                   return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit, offset });
+                   return new ASTNodeIntegerLiteral(offset);
                }
            }
 
@@ -63,11 +63,11 @@ namespace hex::plugin::builtin {
                 SharedData::currentProvider->read(address, value, size);
 
                 switch ((u8)size) {
-                case 1:  return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned8Bit,   *reinterpret_cast<u8*>(value)   });
-                case 2:  return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned16Bit,  *reinterpret_cast<u16*>(value)  });
-                case 4:  return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned32Bit,  *reinterpret_cast<u32*>(value)  });
-                case 8:  return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit,  *reinterpret_cast<u64*>(value)  });
-                case 16: return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned128Bit, *reinterpret_cast<u128*>(value) });
+                case 1:  return new ASTNodeIntegerLiteral(*reinterpret_cast<u8*>(value));
+                case 2:  return new ASTNodeIntegerLiteral(*reinterpret_cast<u16*>(value));
+                case 4:  return new ASTNodeIntegerLiteral(*reinterpret_cast<u32*>(value));
+                case 8:  return new ASTNodeIntegerLiteral(*reinterpret_cast<u64*>(value));
+                case 16: return new ASTNodeIntegerLiteral(*reinterpret_cast<u128*>(value));
                 default: ctx.getConsole().abortEvaluation("invalid read size");
             }
             }, address, size);
@@ -89,11 +89,11 @@ namespace hex::plugin::builtin {
                 SharedData::currentProvider->read(address, value, size);
 
                 switch ((u8)size) {
-                case 1:  return new ASTNodeIntegerLiteral({ Token::ValueType::Signed8Bit,   *reinterpret_cast<s8*>(value)   });
-                case 2:  return new ASTNodeIntegerLiteral({ Token::ValueType::Signed16Bit,  *reinterpret_cast<s16*>(value)  });
-                case 4:  return new ASTNodeIntegerLiteral({ Token::ValueType::Signed32Bit,  *reinterpret_cast<s32*>(value)  });
-                case 8:  return new ASTNodeIntegerLiteral({ Token::ValueType::Signed64Bit,  *reinterpret_cast<s64*>(value)  });
-                case 16: return new ASTNodeIntegerLiteral({ Token::ValueType::Signed128Bit, *reinterpret_cast<s128*>(value) });
+                case 1:  return new ASTNodeIntegerLiteral(*reinterpret_cast<s8*>(value));
+                case 2:  return new ASTNodeIntegerLiteral(*reinterpret_cast<s16*>(value));
+                case 4:  return new ASTNodeIntegerLiteral(*reinterpret_cast<s32*>(value));
+                case 8:  return new ASTNodeIntegerLiteral(*reinterpret_cast<s64*>(value));
+                case 16: return new ASTNodeIntegerLiteral(*reinterpret_cast<s128*>(value));
                 default: ctx.getConsole().abortEvaluation("invalid read size");
             }
             }, address, size);
@@ -105,7 +105,7 @@ namespace hex::plugin::builtin {
             auto message = AS_TYPE(ASTNodeStringLiteral, params[1])->getString();
 
             if (LITERAL_COMPARE(condition, condition == 0))
-                ctx.getConsole().abortEvaluation(hex::format("assert failed \"%s\"", message.data()));
+                ctx.getConsole().abortEvaluation(hex::format("assert failed \"{0}\"", message.data()));
 
             return nullptr;
         });
@@ -116,7 +116,7 @@ namespace hex::plugin::builtin {
             auto message = AS_TYPE(ASTNodeStringLiteral, params[1])->getString();
 
             if (LITERAL_COMPARE(condition, condition == 0))
-                ctx.getConsole().log(LogConsole::Level::Warning, hex::format("assert failed \"%s\"", message.data()));
+                ctx.getConsole().log(LogConsole::Level::Warning, hex::format("assert failed \"{0}\"", message.data()));
 
             return nullptr;
         });
@@ -126,23 +126,21 @@ namespace hex::plugin::builtin {
             std::string message;
             for (auto& param : params) {
                 if (auto integerLiteral = dynamic_cast<ASTNodeIntegerLiteral*>(param); integerLiteral != nullptr) {
-                    switch (integerLiteral->getType()) {
-                        case Token::ValueType::Character:       message += std::get<s8>(integerLiteral->getValue()); break;
-                        case Token::ValueType::Unsigned8Bit:    message += std::to_string(std::get<u8>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Signed8Bit:      message += std::to_string(std::get<s8>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Unsigned16Bit:   message += std::to_string(std::get<u16>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Signed16Bit:     message += std::to_string(std::get<s16>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Unsigned32Bit:   message += std::to_string(std::get<u32>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Signed32Bit:     message += std::to_string(std::get<s32>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Unsigned64Bit:   message += std::to_string(std::get<u64>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Signed64Bit:     message += std::to_string(std::get<s64>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Unsigned128Bit:  message += hex::to_string(std::get<u128>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Signed128Bit:    message += hex::to_string(std::get<s128>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Float:           message += std::to_string(std::get<float>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Double:          message += std::to_string(std::get<double>(integerLiteral->getValue())); break;
-                        case Token::ValueType::Boolean:         message += std::get<s32>(integerLiteral->getValue()) ? "true" : "false"; break;
-                        case Token::ValueType::CustomType:      message += "< Custom Type >"; break;
-                    }
+                    std::visit([&](auto &&value) {
+                        using Type = std::remove_cvref_t<decltype(value)>;
+                        if constexpr (std::is_same_v<Type, char>)
+                            message += (char)value;
+                        else if constexpr (std::is_same_v<Type, bool>)
+                            message += value == 0 ? "false" : "true";
+                        else if constexpr (std::is_unsigned_v<Type>)
+                            message += std::to_string(static_cast<u64>(value));
+                        else if constexpr (std::is_signed_v<Type>)
+                            message += std::to_string(static_cast<s64>(value));
+                        else if constexpr (std::is_floating_point_v<Type>)
+                            message += std::to_string(value);
+                        else
+                            message += "< Custom Type >";
+                    }, integerLiteral->getValue());
                 }
                 else if (auto stringLiteral = dynamic_cast<ASTNodeStringLiteral*>(param); stringLiteral != nullptr)
                     message += stringLiteral->getString();
@@ -151,36 +149,6 @@ namespace hex::plugin::builtin {
             ctx.getConsole().log(LogConsole::Level::Info, message);
 
             return nullptr;
-        });
-
-        /* addressof(rValueString) */
-        ContentRegistry::PatternLanguageFunctions::add("addressof", 1, [](auto &ctx, auto params) -> ASTNode* {
-            auto name = AS_TYPE(ASTNodeStringLiteral, params[0])->getString();
-
-            std::vector<std::string> path = splitString(name, ".");
-            auto pattern = ctx.patternFromName(path);
-
-            return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit, u64(pattern->getOffset()) });
-        });
-
-        /* sizeof(rValueString) */
-        ContentRegistry::PatternLanguageFunctions::add("sizeof", 1, [](auto &ctx, auto params) -> ASTNode* {
-            auto name = AS_TYPE(ASTNodeStringLiteral, params[0])->getString();
-
-            std::vector<std::string> path = splitString(name, ".");
-            auto pattern = ctx.patternFromName(path);
-
-            return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit, u64(pattern->getSize()) });
-        });
-
-        /* nextAfter(rValueString) */
-        ContentRegistry::PatternLanguageFunctions::add("nextAfter", 1, [](auto &ctx, auto params) -> ASTNode* {
-            auto name = AS_TYPE(ASTNodeStringLiteral, params[0])->getString();
-
-            std::vector<std::string> path = splitString(name, ".");
-            auto pattern = ctx.patternFromName(path);
-
-            return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit, u64(pattern->getOffset() + pattern->getSize()) });
         });
 
         /* alignTo(alignment, value) */
@@ -193,7 +161,12 @@ namespace hex::plugin::builtin {
                 return remainder != 0 ? u64(value) + (u64(alignment) - remainder) : u64(value);
             }, alignment, value);
 
-            return new ASTNodeIntegerLiteral({ Token::ValueType::Unsigned64Bit, u64(result) });
+            return new ASTNodeIntegerLiteral(u64(result));
+        });
+
+        /* dataSize() */
+        ContentRegistry::PatternLanguageFunctions::add("dataSize", ContentRegistry::PatternLanguageFunctions::NoParameters, [](auto &ctx, auto params) -> ASTNode* {
+            return new ASTNodeIntegerLiteral(u64(SharedData::currentProvider->getActualSize()));
         });
     }
 

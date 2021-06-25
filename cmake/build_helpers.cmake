@@ -20,6 +20,7 @@ macro(addVersionDefines)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGIT_BRANCH=\"\\\"${GIT_BRANCH}\"\\\"")
     endif()
 
+    set(CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} -DPROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR} -DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR} -DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH} ")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -DRELEASE -DIMHEX_VERSION=\"\\\"${PROJECT_VERSION}\"\\\"")
     set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DDEBUG -DIMHEX_VERSION=\"\\\"${PROJECT_VERSION}-Debug\"\\\"")
     set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -DRELEASE -DIMHEX_VERSION=\"\\\"${PROJECT_VERSION}-ReleaseWithDebugInfo\"\\\"")
@@ -36,12 +37,7 @@ macro(findLibraries)
     # Find packages
     find_package(PkgConfig REQUIRED)
 
-    pkg_search_module(CRYPTO libcrypto)
-    if(NOT CRYPTO_FOUND)
-        find_library(CRYPTO crypto REQUIRED)
-    else()
-        set(CRYPTO_INCLUDE_DIRS ${CRYPTO_INCLUDEDIR})
-    endif()
+    find_package(mbedTLS REQUIRED)
 
     pkg_search_module(CAPSTONE REQUIRED capstone)
 
@@ -54,7 +50,12 @@ macro(findLibraries)
     endif()
 
     string(REPLACE "." ";" PYTHON_VERSION_MAJOR_MINOR ${Python_VERSION})
-    list(REMOVE_AT PYTHON_VERSION_MAJOR_MINOR 2)
+
+    list(LENGTH PYTHON_VERSION_MAJOR_MINOR PYTHON_VERSION_COMPONENT_COUNT)
+
+    if (PYTHON_VERSION_COMPONENT_COUNT EQUAL 3)
+        list(REMOVE_AT PYTHON_VERSION_MAJOR_MINOR 2)
+    endif ()
     list(JOIN PYTHON_VERSION_MAJOR_MINOR "." PYTHON_VERSION_MAJOR_MINOR)
 
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} -DPYTHON_VERSION_MAJOR_MINOR=\"\\\"${PYTHON_VERSION_MAJOR_MINOR}\"\\\"")
@@ -71,10 +72,25 @@ endmacro()
 macro(detectOS)
     if (WIN32)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOS_WINDOWS")
+        set(CMAKE_INSTALL_BINDIR ".")
+        set(CMAKE_INSTALL_LIBDIR ".")
+        set(PLUGINS_INSTALL_LOCATION "plugins")
+        set(MAGIC_INSTALL_LOCATION "magic")
+        set(RESOURCES_INSTALL_LOCATION "resources")
     elseif(APPLE)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOS_MACOS")
+        set(CMAKE_INSTALL_BINDIR ".")
+        set(CMAKE_INSTALL_LIBDIR ".")
+        set(PLUGINS_INSTALL_LOCATION "plugins")
+        set(MAGIC_INSTALL_LOCATION "magic")
+        set(RESOURCES_INSTALL_LOCATION "resources")
     elseif(UNIX AND NOT APPLE)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOS_LINUX")
+        set(CMAKE_INSTALL_BINDIR "bin")
+        set(CMAKE_INSTALL_LIBDIR "lib")
+        set(PLUGINS_INSTALL_LOCATION "share/imhex/plugins")
+        set(MAGIC_INSTALL_LOCATION "share/imhex/magic")
+        set(RESOURCES_INSTALL_LOCATION "share/imhex/resources")
     else()
         message(FATAL_ERROR "Unknown / unsupported system!")
     endif()
@@ -98,14 +114,19 @@ macro(configurePackageCreation)
     endif()
 
     if (WIN32)
-        set(application_type WIN32)
-        set(imhex_icon "${PROJECT_SOURCE_DIR}/res/resource.rc")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -static-libstdc++ -static-libgcc -Wl,--allow-multiple-definition -static -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive")
+        if (CMAKE_BUILD_TYPE EQUAL "DEBUG")
+            set(application_type WIN32)
+        else ()
+            set(application_type)
+        endif ()
+        set(imhex_icon "${CMAKE_SOURCE_DIR}/res/resource.rc")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wl,--allow-multiple-definition")
         set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wl,-subsystem,windows")
 
         if (CREATE_PACKAGE)
             set(CPACK_GENERATOR "WIX")
             set(CPACK_PACKAGE_NAME "ImHex")
+            set(CPACK_PACKAGE_VENDOR "WerWolv")
             set(CPACK_WIX_UPGRADE_GUID "05000E99-9659-42FD-A1CF-05C554B39285")
             set(CPACK_WIX_PRODUCT_ICON "${PROJECT_SOURCE_DIR}/res/icon.ico")
             set(CPACK_PACKAGE_INSTALL_DIRECTORY "ImHex")
@@ -115,7 +136,7 @@ macro(configurePackageCreation)
             set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/res/LICENSE.rtf")
         endif()
     elseif (APPLE)
-        set (imhex_icon "${PROJECT_SOURCE_DIR}/res/mac/AppIcon.icns")
+        set (imhex_icon "${CMAKE_SOURCE_DIR}/res/mac/AppIcon.icns")
 
         if (CREATE_BUNDLE)
             set(application_type MACOSX_BUNDLE)
@@ -141,15 +162,15 @@ macro(createPackage)
     file(MAKE_DIRECTORY "plugins")
     foreach (plugin IN LISTS PLUGINS)
         add_subdirectory("plugins/${plugin}")
-        add_custom_command(TARGET imhex POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:${plugin}>
-                $<TARGET_FILE_DIR:imhex>/plugins)
+        if (TARGET ${plugin})
+            set_target_properties(${plugin} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins)
+            install(TARGETS ${plugin} RUNTIME DESTINATION ${PLUGINS_INSTALL_LOCATION})
+            add_dependencies(imhex ${plugin})
+        endif ()
     endforeach()
-    add_custom_command(TARGET imhex POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:libimhex>
-            $<TARGET_FILE_DIR:imhex>)
+
+    set_target_properties(libimhex PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+    install(TARGETS libimhex RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
     if (WIN32)
         # Install binaries directly in the prefix, usually C:\Program Files\ImHex.
@@ -187,17 +208,37 @@ macro(createPackage)
     ]])
     endif()
 
+    if (UNIX AND NOT APPLE)
+        string(REPLACE ":" ";" EXTRA_MAGICDBS "${EXTRA_MAGICDBS}")
+    endif ()
+
+    if (NOT EXTRA_MAGICDBS STREQUAL "")
+        list(GET EXTRA_MAGICDBS -1 EXTRA_MAGICDBS)
+
+        if (NOT EXTRA_MAGICDBS STREQUAL "NOTFOUND")
+            if (EXTRA_MAGICDBS MATCHES ".*\\.mgc")
+                install(FILES "${EXTRA_MAGICDBS}" DESTINATION ${MAGIC_INSTALL_LOCATION})
+            else ()
+                install(FILES "${EXTRA_MAGICDBS}.mgc" DESTINATION ${MAGIC_INSTALL_LOCATION})
+            endif ()
+        endif ()
+    endif ()
+
     # Compile the imhex-specific magicdb
     add_custom_target(magic_dbs ALL
-            SOURCES magic_dbs/nintendo_magic
+            SOURCES ${MAGICDBS}
             )
     add_custom_command(TARGET magic_dbs
             COMMAND file -C -m ${CMAKE_SOURCE_DIR}/magic_dbs
             )
 
+
     # Install the magicdb files.
-    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/magic_dbs.mgc DESTINATION magic/ RENAME imhex.mgc)
-    install(FILES ${EXTRA_MAGICDBS} DESTINATION magic/)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/magic_dbs.mgc DESTINATION ${MAGIC_INSTALL_LOCATION} RENAME imhex.mgc)
+
+    # Install resources
+    install(DIRECTORY ${CMAKE_SOURCE_DIR}/res/resources/ DESTINATION ${RESOURCES_INSTALL_LOCATION})
+
 
     if (CREATE_BUNDLE)
         include(PostprocessBundle)
@@ -235,18 +276,6 @@ function(JOIN OUTPUT GLUE)
     endforeach()
     set(${OUTPUT} "${_TMP_RESULT}" PARENT_SCOPE)
 endfunction()
-
-macro(createMagicDbList)
-    if (DEFINED MAGICDBS)
-        if (WIN32)
-            join(EXTRA_MAGICDBS "\;" ${MAGICDBS})
-        else()
-            join(EXTRA_MAGICDBS ":" ${MAGICDBS})
-        endif()
-    else()
-        set(EXTRA_MAGICDBS "")
-    endif()
-endmacro()
 
 macro(setDefaultBuiltTypeIfUnset)
     if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

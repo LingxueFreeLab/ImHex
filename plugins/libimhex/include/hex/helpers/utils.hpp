@@ -11,6 +11,9 @@
 #include <type_traits>
 #include <vector>
 
+#include <fmt/format.h>
+#include <fmt/chrono.h>
+
 #ifdef __MINGW32__
 #include <winsock.h>
 #else
@@ -73,6 +76,7 @@ namespace hex {
 
 #define TOKEN_CONCAT_IMPL(x, y) x ## y
 #define TOKEN_CONCAT(x, y) TOKEN_CONCAT_IMPL(x, y)
+#define ANONYMOUS_VARIABLE(prefix) TOKEN_CONCAT(prefix, __COUNTER__)
 
 namespace hex {
 
@@ -85,18 +89,13 @@ namespace hex {
     void openWebpage(std::string_view url);
 
     template<typename ... Args>
-    inline std::string format(const char *format, Args ... args) {
-        ssize_t size = snprintf( nullptr, 0, format, args ... );
+    inline std::string format(std::string_view format, Args ... args) {
+        return fmt::format(format, args...);
+    }
 
-        if (size <= 0)
-            return "";
-
-        std::vector<char> buffer(size + 1, 0x00);
-        if (snprintf(buffer.data(), size + 1, format, args ...) <= 0)
-            return "";
-
-
-        return std::string(buffer.data(), buffer.data() + size);
+    template<typename ... Args>
+    inline void print(std::string_view format, Args ... args) {
+        fmt::print(format, args...);
     }
 
     [[nodiscard]] constexpr inline u64 extract(u8 from, u8 to, const hex::unsigned_integral auto &value) {
@@ -106,14 +105,11 @@ namespace hex {
         return (value & mask) >> to;
     }
 
-    template<hex::integral T>
-    [[nodiscard]] constexpr inline T signExtend(T value, u8 currWidth, u8 targetWidth) {
-        T mask = 1LLU << (currWidth - 1);
-        return (((value ^ mask) - mask) << ((sizeof(T) * 8) - targetWidth)) >> ((sizeof(T) * 8) - targetWidth);
-    }
-
     template<typename T>
     struct always_false : std::false_type {};
+
+    template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
+    template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
     template<typename T>
     constexpr T changeEndianess(T value, std::endian endian) {
@@ -167,24 +163,103 @@ namespace hex {
     }
 
     std::vector<std::string> splitString(std::string_view string, std::string_view delimiter);
+    std::string combineStrings(const std::vector<std::string> &strings, std::string_view delimiter = "");
 
     std::string toEngineeringString(double value);
 
     std::vector<u8> readFile(std::string_view path);
 
-    #define SCOPE_EXIT(func) ScopeExit TOKEN_CONCAT(scopeGuard, __COUNTER__)([&] { func })
-    class ScopeExit {
-    public:
-        ScopeExit(std::function<void()> func) : m_func(func) {}
-        ~ScopeExit() { if (this->m_func != nullptr) this->m_func(); }
+    template<typename T>
+    std::vector<u8> toBytes(T value) {
+        std::vector<u8> bytes(sizeof(T));
+        std::memcpy(bytes.data(), &value, sizeof(T));
 
-        void release() {
-            this->m_func = nullptr;
+        return bytes;
+    }
+
+    inline std::vector<u8> parseByteString(std::string_view string) {
+        auto byteString = std::string(string);
+        byteString.erase(std::remove(byteString.begin(), byteString.end(), ' '), byteString.end());
+
+        if ((byteString.length() % 2) != 0) return { };
+
+        std::vector<u8> result;
+        for (u32 i = 0; i < byteString.length(); i += 2) {
+            if (!std::isxdigit(byteString[i]) || !std::isxdigit(byteString[i + 1]))
+                return { };
+
+            result.push_back(std::strtoul(byteString.substr(i, 2).c_str(), nullptr, 16));
         }
 
-    private:
-        std::function<void()> m_func;
+        return result;
+    }
+
+    inline std::string toBinaryString(hex::unsigned_integral auto number) {
+        if (number == 0) return "0";
+
+        std::string result;
+        for (s16 bit = hex::bit_width(number) - 1; bit >= 0; bit--)
+            result += (number & (0b1 << bit)) == 0 ? '0' : '1';
+
+        return result;
+    }
+
+    inline void trimLeft(std::string &s) {
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }));
+    }
+
+     inline void trimRight(std::string &s) {
+        s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }).base(), s.end());
+    }
+
+    inline void trim(std::string &s) {
+        trimLeft(s);
+        trimRight(s);
+    }
+
+    enum class ImHexPath {
+        Patterns,
+        PatternsInclude,
+        Magic,
+        Python,
+        Plugins,
+        Yara,
+        Config,
+        Resources,
+        Constants
     };
+
+    std::vector<std::string> getPath(ImHexPath path);
+
+    #define SCOPE_GUARD ::hex::ScopeGuardOnExit() + [&]()
+    #define ON_SCOPE_EXIT auto ANONYMOUS_VARIABLE(SCOPE_EXIT_) = SCOPE_GUARD
+    template<class F>
+    class ScopeGuard {
+    private:
+        F m_func;
+        bool m_active;
+    public:
+        constexpr ScopeGuard(F func) : m_func(std::move(func)), m_active(true) { }
+        ~ScopeGuard() { if (this->m_active) { this->m_func(); } }
+        void release() { this->m_active = false; }
+
+        ScopeGuard(ScopeGuard &&other) noexcept : m_func(std::move(other.m_func)), m_active(other.m_active) {
+            other.cancel();
+        }
+
+        ScopeGuard& operator=(ScopeGuard &&) = delete;
+    };
+
+    enum class ScopeGuardOnExit { };
+
+    template <typename F>
+    constexpr ScopeGuard<F> operator+(ScopeGuardOnExit, F&& f) {
+        return ScopeGuard<F>(std::forward<F>(f));
+    }
 
     struct Region {
         u64 address;

@@ -33,6 +33,24 @@ namespace hex::lang {
             } else
                 return false;
         });
+
+        this->m_preprocessor->addPragmaHandler("eval_depth", [this](std::string value) {
+            auto limit = strtol(value.c_str(), nullptr, 0);
+
+            if (limit <= 0)
+                return false;
+
+            this->m_recursionLimit = limit;
+            return true;
+        });
+
+        this->m_preprocessor->addPragmaHandler("base_address", [](std::string value) {
+            auto baseAddress = strtoull(value.c_str(), nullptr, 0);
+
+            SharedData::currentProvider->setBaseAddress(baseAddress);
+            return true;
+        });
+
         this->m_preprocessor->addDefaultPragmaHandlers();
     }
 
@@ -56,6 +74,9 @@ namespace hex::lang {
             return { };
         }
 
+        this->m_evaluator->setDefaultEndian(this->m_defaultEndian);
+        this->m_evaluator->setRecursionLimit(this->m_recursionLimit);
+
         auto tokens = this->m_lexer->lex(preprocessedCode.value());
         if (!tokens.has_value()) {
             this->m_currError = this->m_lexer->getError();
@@ -68,7 +89,10 @@ namespace hex::lang {
             return { };
         }
 
-        SCOPE_EXIT( for(auto &node : ast.value()) delete node; );
+        ON_SCOPE_EXIT {
+            for(auto &node : ast.value())
+                delete node;
+        };
 
         auto validatorResult = this->m_validator->validate(ast.value());
         if (!validatorResult) {

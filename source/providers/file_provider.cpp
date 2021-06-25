@@ -42,11 +42,12 @@ namespace hex::prv {
             this->m_writable = false;
         }
 
-        ScopeExit fileCleanup([this]{
+        auto fileCleanup = SCOPE_GUARD {
             this->m_readable = false;
             this->m_file = nullptr;
             CloseHandle(this->m_file);
-        });
+        };
+
         if (this->m_file == nullptr || this->m_file == INVALID_HANDLE_VALUE) {
             return;
         }
@@ -56,11 +57,11 @@ namespace hex::prv {
             return;
         }
 
-        ScopeExit mappingCleanup([this]{
+        auto mappingCleanup = SCOPE_GUARD {
             this->m_readable = false;
             this->m_mapping = nullptr;
             CloseHandle(this->m_mapping);
-        });
+        };
 
         this->m_mappedFile = MapViewOfFile(this->m_mapping, FILE_MAP_ALL_ACCESS, 0, 0, this->m_fileSize);
         if (this->m_mappedFile == nullptr) {
@@ -124,28 +125,31 @@ namespace hex::prv {
     }
 
 
-    void FileProvider::read(u64 offset, void *buffer, size_t size) {
-        if ((offset + size) > this->getSize() || buffer == nullptr || size == 0)
+    void FileProvider::read(u64 offset, void *buffer, size_t size, bool overlays) {
+
+        if (((offset - this->getBaseAddress()) + size) > this->getSize() || buffer == nullptr || size == 0)
             return;
 
-        std::memcpy(buffer, reinterpret_cast<u8*>(this->m_mappedFile) + PageSize * this->m_currPage + offset, size);
+        std::memcpy(buffer, reinterpret_cast<u8*>(this->m_mappedFile) + PageSize * this->m_currPage + offset - this->getBaseAddress(), size);
 
         for (u64 i = 0; i < size; i++)
-            if (this->m_patches.back().contains(offset + i))
-                reinterpret_cast<u8*>(buffer)[i] = this->m_patches.back()[offset + PageSize * this->m_currPage + i];
+            if (getPatches().contains(offset + i))
+                reinterpret_cast<u8*>(buffer)[i] = getPatches()[offset + PageSize * this->m_currPage + i];
+
+        if (overlays)
+            this->applyOverlays(offset, buffer, size);
     }
 
     void FileProvider::write(u64 offset, const void *buffer, size_t size) {
-        if ((offset + size) > this->getSize() || buffer == nullptr || size == 0)
+        if (((offset - this->getBaseAddress()) + size) > this->getSize() || buffer == nullptr || size == 0)
             return;
 
-        this->m_patches.push_back(this->m_patches.back());
-
-        for (u64 i = 0; i < size; i++)
-            this->m_patches.back()[offset + this->getBaseAddress() + i] = reinterpret_cast<const u8*>(buffer)[i];
+        addPatch(offset, buffer, size);
     }
 
     void FileProvider::readRaw(u64 offset, void *buffer, size_t size) {
+        offset -= this->getBaseAddress();
+
         if ((offset + size) > this->getSize() || buffer == nullptr || size == 0)
             return;
 
@@ -153,6 +157,8 @@ namespace hex::prv {
     }
 
     void FileProvider::writeRaw(u64 offset, const void *buffer, size_t size) {
+        offset -= this->getBaseAddress();
+
         if ((offset + size) > this->getSize() || buffer == nullptr || size == 0)
             return;
 
@@ -165,13 +171,13 @@ namespace hex::prv {
     std::vector<std::pair<std::string, std::string>> FileProvider::getDataInformation() {
         std::vector<std::pair<std::string, std::string>> result;
 
-        result.emplace_back("File path", this->m_path);
-        result.emplace_back("Size", hex::toByteString(this->getActualSize()));
+        result.emplace_back("hex.builtin.provider.file.path"_lang, this->m_path);
+        result.emplace_back("hex.builtin.provider.file.size"_lang, hex::toByteString(this->getActualSize()));
 
         if (this->m_fileStatsValid) {
-            result.emplace_back("Creation time", ctime(&this->m_fileStats.st_ctime));
-            result.emplace_back("Last access time", ctime(&this->m_fileStats.st_atime));
-            result.emplace_back("Last modification time", ctime(&this->m_fileStats.st_mtime));
+            result.emplace_back("hex.builtin.provider.file.creation"_lang, ctime(&this->m_fileStats.st_ctime));
+            result.emplace_back("hex.builtin.provider.file.access"_lang, ctime(&this->m_fileStats.st_atime));
+            result.emplace_back("hex.builtin.provider.file.modification"_lang, ctime(&this->m_fileStats.st_mtime));
         }
 
         return result;

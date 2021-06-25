@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <hex/helpers/utils.hpp>
@@ -14,7 +15,7 @@ namespace hex {
 
     class Window {
     public:
-        Window(int &argc, char **&argv);
+        Window();
         ~Window();
 
         void loop();
@@ -25,27 +26,31 @@ namespace hex {
         friend void ImHexSettingsHandler_WriteAll(ImGuiContext* ctx, ImGuiSettingsHandler *handler, ImGuiTextBuffer *buf);
 
         bool setFont(const std::filesystem::path &font_path);
-
-        void initPlugins();
-        void deinitPlugins();
     private:
         void frameBegin();
+        void frame();
         void frameEnd();
 
         void drawWelcomeScreen();
+        void resetLayout();
 
         void initGLFW();
         void initImGui();
         void deinitGLFW();
         void deinitImGui();
 
-        GLFWwindow* m_window;
+        GLFWwindow* m_window = nullptr;
 
         float m_globalScale = 1.0f, m_fontScale = 1.0f;
-        bool m_fpsVisible = false;
+        double m_targetFps = 60.0;
         bool m_demoWindowOpen = false;
+        bool m_layoutConfigured = false;
 
-        static inline std::tuple<int, int> s_currShortcut = { -1, -1 };
+        double m_lastFrameTime;
+
+        bool m_prevKeysDown[512];
+
+        std::string m_availableUpdate;
     };
 
 }

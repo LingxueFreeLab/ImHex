@@ -2,9 +2,9 @@
 
 #include <hex/helpers/utils.hpp>
 #include <hex/views/view.hpp>
+#include "helpers/encoding_file.hpp"
 
 #include <imgui_memory_editor.h>
-#include <ImGuiFileBrowser.h>
 
 #include <list>
 #include <tuple>
@@ -21,22 +21,21 @@ namespace hex {
 
     class ViewHexEditor : public View {
     public:
-        ViewHexEditor(std::vector<lang::PatternData*> &patternData);
+        ViewHexEditor();
         ~ViewHexEditor() override;
 
         void drawContent() override;
+        void drawAlwaysVisible() override;
         void drawMenu() override;
-        bool handleShortcut(int key, int mods) override;
+        bool handleShortcut(bool keys[512], bool ctrl, bool shift, bool alt) override;
 
     private:
         MemoryEditor m_memoryEditor;
 
-        std::vector<lang::PatternData*> &m_patternData;
-
         std::map<u64, u32> m_highlightedBytes;
 
-        char m_searchStringBuffer[0xFFFF] = { 0 };
-        char m_searchHexBuffer[0xFFFF] = { 0 };
+        std::vector<char> m_searchStringBuffer;
+        std::vector<char> m_searchHexBuffer;
         SearchFunction m_searchFunction = nullptr;
         std::vector<std::pair<u64, u64>> *m_lastSearchBuffer;
 
@@ -53,6 +52,9 @@ namespace hex {
         std::string m_loaderScriptScriptPath;
         std::string m_loaderScriptFilePath;
 
+        hex::EncodingFile m_currEncodingFile;
+        u8 m_highlightAlpha = 0x80;
+
         void drawSearchPopup();
         void drawGotoPopup();
         void drawEditPopup();
@@ -63,6 +65,7 @@ namespace hex {
 
         enum class Language { C, Cpp, CSharp, Rust, Python, Java, JavaScript };
         void copyBytes();
+        void pasteBytes();
         void copyString();
         void copyLanguageArray(Language language);
         void copyHexView();

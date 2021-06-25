@@ -3,27 +3,33 @@
 #include <hex.hpp>
 #include <hex/api/content_registry.hpp>
 
+#include <chrono>
 #include <iostream>
 #include <numeric>
+#include <typeinfo>
+#include <thread>
 
 #include <imgui.h>
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <imgui_freetype.h>
+#include <imgui_imhex_extensions.h>
+#include <implot.h>
+#include <implot_internal.h>
 
-#include "helpers/plugin_handler.hpp"
+#include <fontawesome_font.h>
+
+#include "helpers/plugin_manager.hpp"
+#include "init/tasks.hpp"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
-#if defined(OS_WINDOWS)
-    #include <windows.h>
-#endif
-
 namespace hex {
 
-    constexpr auto MenuBarItems = { "File", "Edit", "View", "Help" };
+    using namespace std::literals::chrono_literals;
 
     void *ImHexSettingsHandler_ReadOpenFn(ImGuiContext *ctx, ImGuiSettingsHandler *, const char *) {
         return ctx; // Unused, but the return value has to be non-null
@@ -31,7 +37,7 @@ namespace hex {
 
     void ImHexSettingsHandler_ReadLine(ImGuiContext*, ImGuiSettingsHandler *handler, void *, const char* line) {
         for (auto &view : ContentRegistry::Views::getEntries()) {
-            std::string format = std::string(view->getName()) + "=%d";
+            std::string format = std::string(view->getUnlocalizedName()) + "=%d";
             sscanf(line, format.c_str(), &view->getWindowOpenState());
         }
     }
@@ -42,79 +48,150 @@ namespace hex {
         buf->appendf("[%s][General]\n", handler->TypeName);
 
         for (auto &view : ContentRegistry::Views::getEntries()) {
-            buf->appendf("%s=%d\n", view->getName().data(), view->getWindowOpenState());
+            buf->appendf("%s=%d\n", view->getUnlocalizedName().data(), view->getWindowOpenState());
         }
 
         buf->append("\n");
     }
 
-    Window::Window(int &argc, char **&argv) {
-        hex::SharedData::mainArgc = argc;
-        hex::SharedData::mainArgv = argv;
+    Window::Window() {
+        SharedData::currentProvider = nullptr;
 
-        // Try to attach to a currently open console on Windows if available
-        #if defined(OS_WINDOWS)
-            if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-                HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-                if (hStdOut != INVALID_HANDLE_VALUE) {
-                    freopen("CONOUT$", "w", stdout);
-                    freopen("CONERR$", "w", stderr);
-                    setvbuf(stdout, nullptr, _IONBF, 0);
-                    setvbuf(stderr, nullptr, _IONBF, 0);
+        {
+            for (const auto &[argument, value] : init::getInitArguments()) {
+                if (argument == "update-available") {
+                    this->m_availableUpdate = value;
+                } else if (argument == "no-plugins") {
+                    View::doLater([]{ ImGui::OpenPopup("No Plugins"); });
                 }
             }
-        #endif
-
-        printf("Hello\n");
-
-        ContentRegistry::Settings::load();
-        View::postEvent(Events::SettingsChanged);
+        }
 
         this->initGLFW();
         this->initImGui();
-    }
 
-    Window::~Window() {
-        this->deinitImGui();
-        this->deinitGLFW();
-        ContentRegistry::Settings::store();
+        EventManager::subscribe<EventSettingsChanged>(this, [this]() {
+            {
+                auto theme = ContentRegistry::Settings::getSetting("hex.builtin.setting.interface", "hex.builtin.setting.interface.color");
 
-        for (auto &view : ContentRegistry::Views::getEntries())
-            delete view;
-        ContentRegistry::Views::getEntries().clear();
-
-        this->deinitPlugins();
-    }
-
-    void Window::loop() {
-        while (!glfwWindowShouldClose(this->m_window)) {
-            this->frameBegin();
-
-            for (const auto &call : View::getDeferedCalls())
-                call();
-            View::getDeferedCalls().clear();
-
-            if (SharedData::currentProvider != nullptr) {
-                for (auto &view : ContentRegistry::Views::getEntries()) {
-                    if (!view->getWindowOpenState())
-                        continue;
-
-                    auto minSize = view->getMinSize();
-                    minSize.x *= this->m_globalScale;
-                    minSize.y *= this->m_globalScale;
-
-                    ImGui::SetNextWindowSizeConstraints(minSize, view->getMaxSize());
-                    view->drawContent();
+                if (theme.is_number()) {
+                    switch (static_cast<int>(theme)) {
+                        default:
+                        case 0: /* Dark theme */
+                            ImGui::StyleColorsDark();
+                            ImGui::StyleCustomColorsDark();
+                            ImPlot::StyleColorsDark();
+                            break;
+                        case 1: /* Light theme */
+                            ImGui::StyleColorsLight();
+                            ImGui::StyleCustomColorsLight();
+                            ImPlot::StyleColorsLight();
+                            break;
+                        case 2: /* Classic theme */
+                            ImGui::StyleColorsClassic();
+                            ImGui::StyleCustomColorsClassic();
+                            ImPlot::StyleColorsClassic();
+                            break;
+                    }
+                    ImGui::GetStyle().Colors[ImGuiCol_DockingEmptyBg] = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
                 }
             }
 
-            View::drawCommonInterfaces();
+            {
+                auto language = ContentRegistry::Settings::getSetting("hex.builtin.setting.interface", "hex.builtin.setting.interface.language");
 
-            #ifdef DEBUG
-                if (this->m_demoWindowOpen)
-                    ImGui::ShowDemoWindow(&this->m_demoWindowOpen);
-            #endif
+                if (language.is_string()) {
+                    LangEntry::loadLanguage(static_cast<std::string>(language));
+                } else {
+                    // If no language is specified, fall back to English.
+                    LangEntry::loadLanguage("en-US");
+                }
+            }
 
+            {
+                auto targetFps = ContentRegistry::Settings::getSetting("hex.builtin.setting.interface", "hex.builtin.setting.interface.fps");
+
+                if (targetFps.is_number())
+                    this->m_targetFps = targetFps;
+            }
+
+            {
+                if (ContentRegistry::Settings::read("hex.builtin.setting.imhex", "hex.builtin.setting.imhex.launched", 0) == 1)
+                    this->m_layoutConfigured = true;
+                else
+                    ContentRegistry::Settings::write("hex.builtin.setting.imhex", "hex.builtin.setting.imhex.launched", 1);
+            }
+        });
+
+        EventManager::subscribe<EventFileLoaded>(this, [this](const std::string &path){
+            SharedData::recentFilePaths.push_front(path);
+
+            {
+                std::list<std::string> uniques;
+                for (auto &file : SharedData::recentFilePaths) {
+
+                    bool exists = false;
+                    for (auto &unique : uniques) {
+                        if (file == unique)
+                            exists = true;
+                    }
+
+                    if (!exists)
+                        uniques.push_back(file);
+
+                    if (uniques.size() > 5)
+                        break;
+                }
+                SharedData::recentFilePaths = uniques;
+            }
+
+            {
+                std::vector<std::string> recentFilesVector;
+                std::copy(SharedData::recentFilePaths.begin(), SharedData::recentFilePaths.end(), std::back_inserter(recentFilesVector));
+
+                ContentRegistry::Settings::write("hex.builtin.setting.imhex", "hex.builtin.setting.imhex.recent_files", recentFilesVector);
+            }
+        });
+
+        EventManager::subscribe<RequestCloseImHex>(this, [this]() {
+            glfwSetWindowShouldClose(this->m_window, true);
+        });
+
+        EventManager::subscribe<RequestChangeWindowTitle>(this, [this](std::string windowTitle) {
+            if (windowTitle.empty())
+                glfwSetWindowTitle(this->m_window, "ImHex");
+            else
+                glfwSetWindowTitle(this->m_window, ("ImHex - " + windowTitle).c_str());
+        });
+
+        EventManager::post<EventSettingsChanged>();
+
+        for (const auto &path : ContentRegistry::Settings::read("hex.builtin.setting.imhex", "hex.builtin.setting.imhex.recent_files"))
+            SharedData::recentFilePaths.push_back(path);
+    }
+
+    Window::~Window() {
+        delete SharedData::currentProvider;
+
+        this->deinitImGui();
+        this->deinitGLFW();
+
+        EventManager::unsubscribe<EventSettingsChanged>(this);
+        EventManager::unsubscribe<EventFileLoaded>(this);
+        EventManager::unsubscribe<RequestCloseImHex>(this);
+        EventManager::unsubscribe<RequestChangeWindowTitle>(this);
+    }
+
+    void Window::loop() {
+        this->m_lastFrameTime = glfwGetTime();
+        while (!glfwWindowShouldClose(this->m_window)) {
+            if (!glfwGetWindowAttrib(this->m_window, GLFW_VISIBLE) || glfwGetWindowAttrib(this->m_window, GLFW_ICONIFIED))
+                glfwWaitEvents();
+
+            glfwPollEvents();
+
+            this->frameBegin();
+            this->frame();
             this->frameEnd();
         }
     }
@@ -131,7 +208,33 @@ namespace hex {
         // Load font data & build atlas
         std::uint8_t *px;
         int w, h;
-        io.Fonts->AddFontFromFileTTF(path.string().c_str(), std::floor(14.0f * this->m_fontScale)); // Needs conversion to char for Windows
+
+        ImVector<ImWchar> ranges;
+        ImFontGlyphRangesBuilder glyphRangesBuilder;
+
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesJapanese());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesChineseFull());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesCyrillic());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesKorean());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesThai());
+        glyphRangesBuilder.AddRanges(io.Fonts->GetGlyphRangesVietnamese());
+        glyphRangesBuilder.BuildRanges(&ranges);
+
+        ImWchar fontAwesomeRange[] = {
+                ICON_MIN_FA, ICON_MAX_FA,
+                0
+        };
+
+        ImFontConfig cfg;
+        cfg.OversampleH = cfg.OversampleV = 1, cfg.PixelSnapH = true;
+        cfg.SizePixels = 13.0f * this->m_fontScale;
+
+        io.Fonts->AddFontFromFileTTF(path.string().c_str(), std::floor(14.0f * this->m_fontScale), &cfg, ranges.Data); // Needs conversion to char for Windows
+        cfg.MergeMode = true;
+
+        io.Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 13.0f * this->m_fontScale, &cfg, fontAwesomeRange);
+
         ImGuiFreeType::BuildFontAtlas(io.Fonts, ImGuiFreeType::Monochrome);
         io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
 
@@ -148,7 +251,6 @@ namespace hex {
     }
 
     void Window::frameBegin() {
-        glfwPollEvents();
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -164,23 +266,39 @@ namespace hex {
         ImGuiWindowFlags windowFlags = ImGuiWindowFlags_MenuBar     | ImGuiWindowFlags_NoDocking
                                      | ImGuiWindowFlags_NoTitleBar  | ImGuiWindowFlags_NoCollapse
                                      | ImGuiWindowFlags_NoMove      | ImGuiWindowFlags_NoResize
-                                     | ImGuiWindowFlags_NoNavFocus  | ImGuiWindowFlags_NoBringToFrontOnFocus;
+                                     | ImGuiWindowFlags_NoNavFocus  | ImGuiWindowFlags_NoBringToFrontOnFocus
+                                     | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
 
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
         if (ImGui::Begin("DockSpace", nullptr, windowFlags)) {
             ImGui::PopStyleVar(2);
-            ImGui::DockSpace(ImGui::GetID("MainDock"), ImVec2(0.0f, 0.0f));
+
+            ImGui::DockSpace(ImGui::GetID("MainDock"), ImVec2(0.0f, ImGui::GetContentRegionAvail().y - ImGui::GetTextLineHeightWithSpacing() - 1));
+
+            ImGui::Separator();
+            for (const auto &callback : ContentRegistry::Interface::getFooterItems()) {
+                auto prevIdx = ImGui::GetWindowDrawList()->_VtxCurrentIdx;
+                callback();
+                auto currIdx = ImGui::GetWindowDrawList()->_VtxCurrentIdx;
+
+                // Only draw separator if something was actually drawn
+                if (prevIdx != currIdx) {
+                    ImGui::SameLine();
+                    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
+                    ImGui::SameLine();
+                }
+            }
 
             if (ImGui::BeginMenuBar()) {
 
-                for (auto menu : MenuBarItems)
+                for (const auto& menu : { "hex.menu.file"_lang, "hex.menu.edit"_lang, "hex.menu.view"_lang, "hex.menu.help"_lang })
                     if (ImGui::BeginMenu(menu)) ImGui::EndMenu();
 
-                if (ImGui::BeginMenu("View")) {
+                if (ImGui::BeginMenu("hex.menu.view"_lang)) {
                     for (auto &view : ContentRegistry::Views::getEntries()) {
                         if (view->hasViewMenuItemEntry())
-                            ImGui::MenuItem((std::string(view->getName()) + " View").c_str(), "", &view->getWindowOpenState());
+                            ImGui::MenuItem((LangEntry(view->getUnlocalizedName()) + " " + "hex.menu.view"_lang).c_str(), "", &view->getWindowOpenState());
                     }
                     ImGui::EndMenu();
                 }
@@ -189,54 +307,87 @@ namespace hex {
                     view->drawMenu();
                 }
 
-                if (ImGui::BeginMenu("View")) {
-                    ImGui::Separator();
-                    ImGui::MenuItem("Display FPS", "", &this->m_fpsVisible);
-                    #ifdef DEBUG
-                        ImGui::MenuItem("Demo View", "", &this->m_demoWindowOpen);
+                if (ImGui::BeginMenu("hex.menu.view"_lang)) {
+                    #if defined(DEBUG)
+                        ImGui::Separator();
+                        ImGui::MenuItem("hex.menu.view.demo"_lang, "", &this->m_demoWindowOpen);
                     #endif
                     ImGui::EndMenu();
                 }
 
-                if (this->m_fpsVisible) {
-                    char buffer[0x20];
-                    snprintf(buffer, 0x20, "%.1f FPS", ImGui::GetIO().Framerate);
-
-                    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::GetFontSize() * strlen(buffer) + 20);
-                    ImGui::TextUnformatted(buffer);
-                }
+                #if defined(DEBUG)
+                    ImGui::SameLine();
+                    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 2 * ImGui::GetFontSize());
+                    ImGui::TextUnformatted(ICON_FA_BUG);
+                #endif
 
                 ImGui::EndMenuBar();
             }
 
-            if (auto &[key, mods] = Window::s_currShortcut; key != -1) {
-                for (auto &view : ContentRegistry::Views::getEntries()) {
-                    if (view->getWindowOpenState()) {
-                        if (view->handleShortcut(key, mods))
-                            break;
-                    }
-                }
-
-                Window::s_currShortcut = { -1, -1 };
-            }
-
-            ImGui::GetWindowDockID()
             if (SharedData::currentProvider == nullptr) {
                 char title[256];
                 ImFormatString(title, IM_ARRAYSIZE(title), "%s/DockSpace_%08X", ImGui::GetCurrentWindow()->Name, ImGui::GetID("MainDock"));
                 if (ImGui::Begin(title)) {
                     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10 * this->m_globalScale, 10 * this->m_globalScale));
-                    if (ImGui::BeginChild("Welcome Screen", ImVec2(0, 0), ImGuiWindowFlags_AlwaysUseWindowPadding | ImGuiWindowFlags_NoDecoration)) {
+                    if (ImGui::BeginChild("Welcome Screen", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysUseWindowPadding | ImGuiWindowFlags_NoDecoration)) {
                         this->drawWelcomeScreen();
                     }
                     ImGui::EndChild();
                     ImGui::PopStyleVar();
                 }
                 ImGui::End();
+            } else if (!this->m_layoutConfigured) {
+                this->m_layoutConfigured = true;
+                this->resetLayout();
             }
 
         }
         ImGui::End();
+
+        // Popup for when no plugins were loaded. Intentionally left untranslated because localization isn't available
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5F, 0.5F));
+        if (ImGui::BeginPopupModal("No Plugins", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+            ImGui::TextUnformatted("No ImHex plugins loaded (including the built-in plugin)!");
+            ImGui::TextUnformatted("Make sure you at least got the builtin plugin in your plugins folder.");
+            ImGui::TextUnformatted("To find out where your plugin folder is, check ImHex' Readme.");
+            ImGui::EndPopup();
+        }
+    }
+
+    void Window::frame() {
+        bool pressedKeys[512] = { false };
+
+        std::copy_n(ImGui::GetIO().KeysDown, 512, this->m_prevKeysDown);
+        for (u16 i = 0; i < 512; i++)
+            pressedKeys[i] = ImGui::GetIO().KeysDown[i] && !this->m_prevKeysDown[i];
+
+        for (const auto &call : View::getDeferedCalls())
+            call();
+        View::getDeferedCalls().clear();
+
+        for (auto &view : ContentRegistry::Views::getEntries()) {
+            view->drawAlwaysVisible();
+
+            if (!view->shouldProcess())
+                continue;
+
+            auto minSize = view->getMinSize();
+            minSize.x *= this->m_globalScale;
+            minSize.y *= this->m_globalScale;
+
+            ImGui::SetNextWindowSizeConstraints(minSize, view->getMaxSize());
+            view->drawContent();
+            view->handleShortcut(pressedKeys, ImGui::GetIO().KeyCtrl, ImGui::GetIO().KeyShift, ImGui::GetIO().KeyAlt);
+        }
+
+        View::drawCommonInterfaces();
+
+#ifdef DEBUG
+        if (this->m_demoWindowOpen) {
+            ImGui::ShowDemoWindow(&this->m_demoWindowOpen);
+            ImPlot::ShowDemoWindow(&this->m_demoWindowOpen);
+        }
+#endif
     }
 
     void Window::frameEnd() {
@@ -255,15 +406,164 @@ namespace hex {
         glfwMakeContextCurrent(backup_current_context);
 
         glfwSwapBuffers(this->m_window);
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(u64((this->m_lastFrameTime + 1 / (ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow) ? this->m_targetFps : 5.0) - glfwGetTime()) * 1000)));
+        this->m_lastFrameTime = glfwGetTime();
     }
 
     void Window::drawWelcomeScreen() {
-        ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive), "Welcome to ImHex!");
+        ImGui::UnderlinedText("hex.welcome.header.main"_lang, ImGui::GetStyleColorVec4(ImGuiCol_Text));
+
+        ImGui::NewLine();
+
+        const auto availableSpace = ImGui::GetContentRegionAvail();
+
+        ImGui::Indent();
+        if (ImGui::BeginTable("Welcome Left", 1, ImGuiTableFlags_NoBordersInBody, ImVec2(availableSpace.x / 2, availableSpace.y))) {
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.header.start"_lang);
+            {
+                if (ImGui::BulletHyperlink("hex.welcome.start.open_file"_lang))
+                    EventManager::post<RequestOpenWindow>("Open File");
+                if (ImGui::BulletHyperlink("hex.welcome.start.open_project"_lang))
+                    EventManager::post<RequestOpenWindow>("Open Project");
+            }
+
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 9);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.start.recent"_lang);
+            {
+                if (!SharedData::recentFilePaths.empty()) {
+                    for (auto &path : SharedData::recentFilePaths) {
+                        if (ImGui::BulletHyperlink(std::filesystem::path(path).filename().string().c_str())) {
+                            EventManager::post<EventFileDropped>(path);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!this->m_availableUpdate.empty()) {
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("hex.welcome.header.update"_lang);
+                {
+                    if (ImGui::DescriptionButton("hex.welcome.update.title"_lang, hex::format("hex.welcome.update.desc"_lang, this->m_availableUpdate).c_str(), ImVec2(ImGui::GetContentRegionAvail().x * 0.8F, 0)))
+                        hex::openWebpage("hex.welcome.update.link"_lang);
+                }
+            }
+
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.header.help"_lang);
+            {
+                if (ImGui::BulletHyperlink("hex.welcome.help.repo"_lang)) hex::openWebpage("hex.welcome.help.repo.link"_lang);
+                if (ImGui::BulletHyperlink("hex.welcome.help.gethelp"_lang)) hex::openWebpage("hex.welcome.help.gethelp.link"_lang);
+            }
+
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.header.plugins"_lang);
+            {
+                const auto &plugins = PluginManager::getPlugins();
+
+                if (!plugins.empty()) {
+                    if (ImGui::BeginTable("plugins", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit, ImVec2((ImGui::GetContentRegionAvail().x * 5) / 6, ImGui::GetTextLineHeightWithSpacing() * 5))) {
+                        ImGui::TableSetupScrollFreeze(0, 1);
+                        ImGui::TableSetupColumn("hex.welcome.plugins.plugin"_lang);
+                        ImGui::TableSetupColumn("hex.welcome.plugins.author"_lang);
+                        ImGui::TableSetupColumn("hex.welcome.plugins.desc"_lang);
+
+                        ImGui::TableHeadersRow();
+
+                        ImGuiListClipper clipper;
+                        clipper.Begin(plugins.size());
+
+                        while (clipper.Step()) {
+                            for (u64 i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+                                ImGui::TableNextRow();
+                                ImGui::TableNextColumn();
+                                ImGui::TextUnformatted((plugins[i].getPluginName() + "   ").c_str());
+                                ImGui::TableNextColumn();
+                                ImGui::TextUnformatted((plugins[i].getPluginAuthor() + "   ").c_str());
+                                ImGui::TableNextColumn();
+                                ImGui::TextUnformatted(plugins[i].getPluginDescription().c_str());
+                            }
+                        }
+
+                        clipper.End();
+
+                        ImGui::EndTable();
+                    }
+                }
+            }
+
+            ImGui::EndTable();
+        }
+        ImGui::SameLine();
+        if (ImGui::BeginTable("Welcome Right", 1, ImGuiTableFlags_NoBordersInBody, ImVec2(availableSpace.x / 2, availableSpace.y))) {
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.header.customize"_lang);
+            {
+                if (ImGui::DescriptionButton("hex.welcome.customize.settings.title"_lang, "hex.welcome.customize.settings.desc"_lang, ImVec2(ImGui::GetContentRegionAvail().x * 0.8F, 0)))
+                    EventManager::post<RequestOpenWindow>("Settings");
+            }
+            ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("hex.welcome.header.learn"_lang);
+            {
+                if (ImGui::DescriptionButton("hex.welcome.learn.latest.title"_lang, "hex.welcome.learn.latest.desc"_lang, ImVec2(ImGui::GetContentRegionAvail().x * 0.8F, 0)))
+                    hex::openWebpage("hex.welcome.learn.latest.link"_lang);
+                if (ImGui::DescriptionButton("hex.welcome.learn.pattern.title"_lang, "hex.welcome.learn.pattern.desc"_lang, ImVec2(ImGui::GetContentRegionAvail().x * 0.8F, 0)))
+                    hex::openWebpage("hex.welcome.learn.pattern.link"_lang);
+                if (ImGui::DescriptionButton("hex.welcome.learn.plugins.title"_lang, "hex.welcome.learn.plugins.desc"_lang, ImVec2(ImGui::GetContentRegionAvail().x * 0.8F, 0)))
+                    hex::openWebpage("hex.welcome.learn.plugins.link"_lang);
+            }
+
+            auto extraWelcomeScreenEntries = ContentRegistry::Interface::getWelcomeScreenEntries();
+            if (!extraWelcomeScreenEntries.empty()) {
+                ImGui::TableNextRow(ImGuiTableRowFlags_None, ImGui::GetTextLineHeightWithSpacing() * 5);
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("hex.welcome.header.various"_lang);
+                {
+                    for (const auto &callback : extraWelcomeScreenEntries)
+                        callback();
+                }
+            }
+
+
+            ImGui::EndTable();
+        }
     }
 
-     void Window::initGLFW() {
+    void Window::resetLayout() {
+        auto dockId = ImGui::GetID("MainDock");
+
+        ImGui::DockBuilderRemoveNode(dockId);
+        ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetWindowSize());
+
+        ImGuiID mainWindowId, splitWindowId, hexEditorId, utilitiesId, inspectorId, patternDataId;
+
+        ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.8, &mainWindowId, &utilitiesId);
+        ImGui::DockBuilderSplitNode(mainWindowId, ImGuiDir_Down, 0.3, &patternDataId, &splitWindowId);
+        ImGui::DockBuilderSplitNode(splitWindowId, ImGuiDir_Right, 0.3, &inspectorId, &hexEditorId);
+
+        for (auto &view : ContentRegistry::Views::getEntries())
+            ImGui::DockBuilderDockWindow(view->getUnlocalizedName().data(), utilitiesId);
+
+        ImGui::DockBuilderDockWindow("hex.view.hexeditor.name", hexEditorId);
+        ImGui::DockBuilderDockWindow("hex.view.data_inspector.name", inspectorId);
+        ImGui::DockBuilderDockWindow("hex.view.pattern_data.name", patternDataId);
+
+        ImGui::DockBuilderFinish(dockId);
+    }
+
+    void Window::initGLFW() {
         glfwSetErrorCallback([](int error, const char* desc) {
-            fprintf(stderr, "Glfw Error %d: %s\n", error, desc);
+            log::error("GLFW Error [{}] : {}", error, desc);
         });
 
         if (!glfwInit())
@@ -284,10 +584,11 @@ namespace hex {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 
         this->m_window = glfwCreateWindow(1280 * this->m_globalScale, 720 * this->m_globalScale, "ImHex", nullptr, nullptr);
 
+        glfwSetWindowUserPointer(this->m_window, this);
 
         if (this->m_window == nullptr)
             throw std::runtime_error("Failed to create window!");
@@ -309,15 +610,29 @@ namespace hex {
 
          glfwSetWindowPosCallback(this->m_window, [](GLFWwindow *window, int x, int y) {
              SharedData::windowPos = ImVec2(x, y);
+
+             auto win = static_cast<Window*>(glfwGetWindowUserPointer(window));
+             win->frameBegin();
+             win->frame();
+             win->frameEnd();
          });
 
         glfwSetWindowSizeCallback(this->m_window, [](GLFWwindow *window, int width, int height) {
             SharedData::windowSize = ImVec2(width, height);
+
+            auto win = static_cast<Window*>(glfwGetWindowUserPointer(window));
+            win->frameBegin();
+            win->frame();
+            win->frameEnd();
         });
 
         glfwSetKeyCallback(this->m_window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
+
+            auto keyName = glfwGetKeyName(key, scancode);
+            if (keyName != nullptr)
+                key = std::toupper(keyName[0]);
+
             if (action == GLFW_PRESS) {
-                Window::s_currShortcut = { key, mods };
                 auto &io = ImGui::GetIO();
                 io.KeysDown[key] = true;
                 io.KeyCtrl  = (mods & GLFW_MOD_CONTROL) != 0;
@@ -337,11 +652,11 @@ namespace hex {
             if (count != 1)
                 return;
 
-            View::postEvent(Events::FileDropped, paths[0]);
+            EventManager::post<EventFileDropped>(paths[0]);
         });
 
         glfwSetWindowCloseCallback(this->m_window, [](GLFWwindow *window) {
-            View::postEvent(Events::WindowClosing, window);
+            EventManager::post<EventWindowClosing>(window);
         });
 
 
@@ -353,13 +668,19 @@ namespace hex {
 
     void Window::initImGui() {
         IMGUI_CHECKVERSION();
-        auto *ctx = ImGui::CreateContext();
-        GImGui = ctx;
+
+        GImGui = ImGui::CreateContext();
+        GImPlot = ImPlot::CreateContext();
 
         ImGuiIO& io = ImGui::GetIO();
         ImGuiStyle& style = ImGui::GetStyle();
 
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable | ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
+        #if !defined(OS_LINUX)
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        #endif
+
+
         io.ConfigViewportsNoTaskBarIcon = true;
         io.KeyMap[ImGuiKey_Tab]         = GLFW_KEY_TAB;
         io.KeyMap[ImGuiKey_LeftArrow]   = GLFW_KEY_LEFT;
@@ -384,28 +705,50 @@ namespace hex {
         io.KeyMap[ImGuiKey_Y]           = GLFW_KEY_Y;
         io.KeyMap[ImGuiKey_Z]           = GLFW_KEY_Z;
 
+        io.UserData = new ImGui::ImHexCustomData();
+
         if (this->m_globalScale != 0.0f)
             style.ScaleAllSizes(this->m_globalScale);
 
-#ifdef __MINGW32__
-        std::filesystem::path resourcePath = std::filesystem::path((SharedData::mainArgv)[0]).parent_path();
-#elif defined(__linux__)
-        std::filesystem::path resourcePath = "/usr/share/ImHex";
-#else
-        std::filesystem::path resourcePath = "";
-#   warning "Unsupported OS for custom font support"
-#endif
+        std::string fontFile;
+        for (const auto &dir : hex::getPath(ImHexPath::Resources)) {
+            fontFile = dir + "/font.ttf";
+            if (std::filesystem::exists(fontFile))
+                break;
+        }
 
-        if (!resourcePath.empty() && this->setFont(resourcePath / "font.ttf"))
-            ;
-        else if ((this->m_fontScale != 0.0f) && (this->m_fontScale != 1.0f)) {
+        if (this->setFont(fontFile)) {
+
+        }
+        else {
             io.Fonts->Clear();
 
             ImFontConfig cfg;
             cfg.OversampleH = cfg.OversampleV = 1, cfg.PixelSnapH = true;
             cfg.SizePixels = 13.0f * this->m_fontScale;
             io.Fonts->AddFontDefault(&cfg);
+
+            cfg.MergeMode = true;
+
+            ImWchar fontAwesomeRange[] = {
+                    ICON_MIN_FA, ICON_MAX_FA,
+                    0
+            };
+            std::uint8_t *px;
+            int w, h;
+            io.Fonts->AddFontFromMemoryCompressedTTF(font_awesome_compressed_data, font_awesome_compressed_size, 11.0f * this->m_fontScale, &cfg, fontAwesomeRange);
+            io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+
+            // Create new font atlas
+            GLuint tex;
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA8, GL_UNSIGNED_INT, px);
+            io.Fonts->SetTexID(reinterpret_cast<ImTextureID>(tex));
         }
+
 
         style.WindowMenuButtonPosition = ImGuiDir_None;
         style.IndentSpacing = 10.0F;
@@ -418,23 +761,20 @@ namespace hex {
         handler.ReadLineFn = ImHexSettingsHandler_ReadLine;
         handler.WriteAllFn = ImHexSettingsHandler_WriteAll;
         handler.UserData   = this;
-        ctx->SettingsHandlers.push_back(handler);
+        ImGui::GetCurrentContext()->SettingsHandlers.push_back(handler);
 
-        ImGui::StyleColorsDark();
+        static std::string iniFileName;
+        for (const auto &dir : hex::getPath(ImHexPath::Config)) {
+            if (std::filesystem::exists(dir)) {
+                iniFileName = dir + "/interface.ini";
+                break;
+            }
+        }
+        io.IniFilename = iniFileName.c_str();
 
         ImGui_ImplGlfw_InitForOpenGL(this->m_window, true);
+
         ImGui_ImplOpenGL3_Init("#version 150");
-    }
-
-    void Window::initPlugins() {
-        try {
-            auto pluginFolderPath = std::filesystem::path((SharedData::mainArgv)[0]).parent_path() / "plugins";
-            PluginHandler::load(pluginFolderPath.string());
-        } catch (std::runtime_error &e) { return; }
-
-        for (const auto &plugin : PluginHandler::getPlugins()) {
-            plugin.initializePlugin();
-        }
     }
 
     void Window::deinitGLFW() {
@@ -443,13 +783,12 @@ namespace hex {
     }
 
     void Window::deinitImGui() {
+        delete static_cast<ImGui::ImHexCustomData*>(ImGui::GetIO().UserData);
+
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
+        ImPlot::DestroyContext();
         ImGui::DestroyContext();
-    }
-
-    void Window::deinitPlugins() {
-        PluginHandler::unload();
     }
 
 }

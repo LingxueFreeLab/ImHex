@@ -10,10 +10,8 @@ namespace hex {
 
     using NumberDisplayStyle = ContentRegistry::DataInspector::NumberDisplayStyle;
 
-    ViewDataInspector::ViewDataInspector() : View("Data Inspector") {
-        View::subscribeEvent(Events::RegionSelected, [this](auto userData) {
-            auto region = std::any_cast<Region>(userData);
-
+    ViewDataInspector::ViewDataInspector() : View("hex.view.data_inspector.name") {
+        EventManager::subscribe<EventRegionSelected>(this, [this](Region region) {
             auto provider = SharedData::currentProvider;
 
             if (provider == nullptr) {
@@ -34,7 +32,7 @@ namespace hex {
     }
 
     ViewDataInspector::~ViewDataInspector() {
-        View::unsubscribeEvent(Events::RegionSelected);
+        EventManager::unsubscribe<EventRegionSelected>(this);
     }
 
     void ViewDataInspector::drawContent() {
@@ -49,12 +47,13 @@ namespace hex {
 
                 std::vector<u8> buffer(entry.requiredSize);
                 provider->read(this->m_startAddress, buffer.data(), buffer.size());
-                this->m_cachedData.emplace_back(entry.name, entry.generatorFunction(buffer, this->m_endian, this->m_numberDisplayStyle));
+
+                this->m_cachedData.push_back({ entry.unlocalizedName, entry.generatorFunction(buffer, this->m_endian, this->m_numberDisplayStyle) });
             }
         }
 
 
-        if (ImGui::Begin("Data Inspector", &this->getWindowOpenState(), ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::Begin(View::toWindowName("hex.view.data_inspector.name").c_str(), &this->getWindowOpenState(), ImGuiWindowFlags_NoCollapse)) {
             auto provider = SharedData::currentProvider;
 
             if (provider != nullptr && provider->isReadable()) {
@@ -62,17 +61,26 @@ namespace hex {
                     ImGuiTableFlags_ScrollY | ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg,
                     ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * (this->m_cachedData.size() + 1)))) {
                     ImGui::TableSetupScrollFreeze(0, 1);
-                    ImGui::TableSetupColumn("Name");
-                    ImGui::TableSetupColumn("Value");
+                    ImGui::TableSetupColumn("hex.view.data_inspector.table.name"_lang);
+                    ImGui::TableSetupColumn("hex.view.data_inspector.table.value"_lang);
 
                     ImGui::TableHeadersRow();
 
-                    for (const auto &[name, function] : this->m_cachedData) {
+                    u32 i = 0;
+                    for (const auto &[unlocalizedName, function] : this->m_cachedData) {
+                        ImGui::PushID(i);
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        ImGui::TextUnformatted(name.c_str());
+                        ImGui::TextUnformatted(LangEntry(unlocalizedName));
                         ImGui::TableNextColumn();
-                        function();
+                        const auto &copyValue = function();
+                        ImGui::SameLine();
+                        if (ImGui::Selectable("##InspectorLine", false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowItemOverlap)) {
+                            ImGui::SetClipboardText(copyValue.c_str());
+                        }
+
+                        ImGui::PopID();
+                        i++;
                     }
 
                     ImGui::EndTable();
@@ -80,27 +88,27 @@ namespace hex {
 
                 ImGui::NewLine();
 
-                if (ImGui::RadioButton("Little Endian", this->m_endian == std::endian::little)) {
+                if (ImGui::RadioButton("hex.common.little_endian"_lang, this->m_endian == std::endian::little)) {
                     this->m_endian = std::endian::little;
                     this->m_shouldInvalidate = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::RadioButton("Big Endian", this->m_endian == std::endian::big)) {
+                if (ImGui::RadioButton("hex.common.big_endian"_lang, this->m_endian == std::endian::big)) {
                     this->m_endian = std::endian::big;
                     this->m_shouldInvalidate = true;
                 }
 
-                if (ImGui::RadioButton("Decimal", this->m_numberDisplayStyle == NumberDisplayStyle::Decimal)) {
+                if (ImGui::RadioButton("hex.common.decimal"_lang, this->m_numberDisplayStyle == NumberDisplayStyle::Decimal)) {
                     this->m_numberDisplayStyle = NumberDisplayStyle::Decimal;
                     this->m_shouldInvalidate = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::RadioButton("Hexadecimal", this->m_numberDisplayStyle == NumberDisplayStyle::Hexadecimal)) {
+                if (ImGui::RadioButton("hex.common.hexadecimal"_lang, this->m_numberDisplayStyle == NumberDisplayStyle::Hexadecimal)) {
                     this->m_numberDisplayStyle = NumberDisplayStyle::Hexadecimal;
                     this->m_shouldInvalidate = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::RadioButton("Octal", this->m_numberDisplayStyle == NumberDisplayStyle::Octal)) {
+                if (ImGui::RadioButton("hex.common.octal"_lang, this->m_numberDisplayStyle == NumberDisplayStyle::Octal)) {
                     this->m_numberDisplayStyle = NumberDisplayStyle::Octal;
                     this->m_shouldInvalidate = true;
                 }

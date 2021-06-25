@@ -1,5 +1,7 @@
 #include <hex/lang/preprocessor.hpp>
 
+#include <filesystem>
+
 namespace hex::lang {
 
     Preprocessor::Preprocessor() {
@@ -43,16 +45,23 @@ namespace hex::lang {
                             offset += 1;
 
                             if (offset >= code.length())
-                                throwPreprocessorError(hex::format("missing terminating '%c' character", endChar), lineNumber);
+                                throwPreprocessorError(hex::format("missing terminating '{0}' character", endChar), lineNumber);
                         }
                         offset += 1;
 
-                        if (includeFile[0] != '/')
-                            includeFile = "include/" + includeFile;
+                        if (includeFile[0] != '/') {
+                            std::string tempPath = includeFile;
+                            for (const auto &dir : hex::getPath(ImHexPath::PatternsInclude)) {
+                               tempPath = hex::format("{0}/{1}", dir.c_str(), includeFile.c_str());
+                                if (std::filesystem::exists(includeFile))
+                                    break;
+                            }
+                            includeFile = tempPath;
+                        }
 
                         FILE *file = fopen(includeFile.c_str(), "r");
                         if (file == nullptr)
-                            throwPreprocessorError(hex::format("%s: No such file or directory", includeFile.c_str()), lineNumber);
+                            throwPreprocessorError(hex::format("{0}: No such file or directory", includeFile.c_str()), lineNumber);
 
                         fseek(file, 0, SEEK_END);
                         size_t size = ftell(file);
@@ -110,7 +119,7 @@ namespace hex::lang {
                         if (replaceValue.empty())
                             throwPreprocessorError("no value given in #define directive", lineNumber);
 
-                        this->m_defines.emplace(defineName, replaceValue);
+                        this->m_defines.emplace(defineName, replaceValue, lineNumber);
                     } else if (code.substr(offset, 6) == "pragma") {
                         offset += 6;
 
@@ -142,7 +151,7 @@ namespace hex::lang {
                         if (pragmaValue.empty())
                             throwPreprocessorError("missing value in #pragma directive", lineNumber);
 
-                        this->m_pragmas.emplace(pragmaKey, pragmaValue);
+                        this->m_pragmas.emplace(pragmaKey, pragmaValue, lineNumber);
                     } else
                         throwPreprocessorError("unknown preprocessor directive", lineNumber);
                 } else if (code.substr(offset, 2) == "//") {
@@ -172,13 +181,13 @@ namespace hex::lang {
 
             if (initialRun) {
                 // Apply defines
-                std::vector<std::pair<std::string, std::string>> sortedDefines;
+                std::vector<std::tuple<std::string, std::string, u32>> sortedDefines;
                 std::copy(this->m_defines.begin(), this->m_defines.end(), std::back_inserter(sortedDefines));
                 std::sort(sortedDefines.begin(), sortedDefines.end(), [](const auto &left, const auto &right) {
-                   return left.first.size() > right.first.size();
+                   return std::get<0>(left).size() > std::get<0>(right).size();
                 });
 
-                for (const auto &[define, value] : sortedDefines) {
+                for (const auto &[define, value, defineLine] : sortedDefines) {
                     s32 index = 0;
                     while((index = output.find(define, index)) != std::string::npos) {
                         output.replace(index, define.length(), value);
@@ -187,12 +196,12 @@ namespace hex::lang {
                 }
 
                 // Handle pragmas
-                for (const auto &[type, value] : this->m_pragmas) {
+                for (const auto &[type, value, pragmaLine] : this->m_pragmas) {
                     if (this->m_pragmaHandlers.contains(type)) {
                         if (!this->m_pragmaHandlers[type](value))
-                            throwPreprocessorError(hex::format("invalid value provided to '%s' #pragma directive", type.c_str()), lineNumber);
+                            throwPreprocessorError(hex::format("invalid value provided to '{0}' #pragma directive", type.c_str()), pragmaLine);
                     } else
-                        throwPreprocessorError(hex::format("no #pragma handler registered for type %s", type.c_str()), lineNumber);
+                        throwPreprocessorError(hex::format("no #pragma handler registered for type {0}", type.c_str()), pragmaLine);
                 }
             }
         } catch (PreprocessorError &e) {

@@ -14,10 +14,11 @@ namespace hex {
         entry.comment.reserve(comment.length());
         std::copy(name.begin(), name.end(), std::back_inserter(entry.name));
         std::copy(comment.begin(), comment.end(), std::back_inserter(entry.comment));
+        entry.locked = false;
 
         entry.color = color;
 
-        EventManager::post(Events::AddBookmark, entry);
+        EventManager::post<RequestAddBookmark>(entry);
     }
 
     void ImHexApi::Bookmarks::add(u64 addr, size_t size, std::string_view name, std::string_view comment, u32 color) {

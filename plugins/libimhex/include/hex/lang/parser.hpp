@@ -54,7 +54,7 @@ namespace hex::lang {
         ASTNode* parseFunctionCall();
         ASTNode* parseStringLiteral();
         ASTNode* parseScopeResolution(std::vector<std::string> &path);
-        ASTNode* parseRValue(std::vector<std::string> &path);
+        ASTNode* parseRValue(ASTNodeRValue::Path &path);
         ASTNode* parseFactor();
         ASTNode* parseUnaryExpression();
         ASTNode* parseMultiplicativeExpression();
@@ -71,8 +71,16 @@ namespace hex::lang {
         ASTNode* parseTernaryConditional();
         ASTNode* parseMathematicalExpression();
 
+        ASTNode* parseFunctionDefintion();
+        ASTNode* parseFunctionStatement();
+        ASTNode* parseFunctionVariableAssignment();
+        ASTNode* parseFunctionReturnStatement();
+        ASTNode* parseFunctionConditional();
+        ASTNode* parseFunctionWhileLoop();
+
         void parseAttribute(Attributable *currNode);
         ASTNode* parseConditional();
+        ASTNode* parseWhileStatement();
         ASTNode* parseType(s32 startIndex);
         ASTNode* parseUsingDeclaration();
         ASTNode* parsePadding();
@@ -91,7 +99,10 @@ namespace hex::lang {
 
         std::vector<ASTNode*> parseTillToken(Token::Type endTokenType, const auto value) {
             std::vector<ASTNode*> program;
-            ScopeExit guard([&]{ for (auto &node : program) delete node; });
+            auto guard = SCOPE_GUARD {
+                for (auto &node : program)
+                    delete node;
+            };
 
             while (this->m_curr->type != endTokenType || (*this->m_curr) != value) {
                 program.push_back(parseStatement());

@@ -4,8 +4,7 @@
 
 namespace hex {
 
-    ViewHelp::ViewHelp() : View("Help") {
-        this->getWindowOpenState() = true;
+    ViewHelp::ViewHelp() : View("hex.view.help.about.name") {
     }
 
     ViewHelp::~ViewHelp() {
@@ -30,26 +29,27 @@ namespace hex {
 
 
     void ViewHelp::drawAboutPopup() {
-        if (ImGui::BeginPopupModal("About", &this->m_aboutWindowOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("ImHex Hex Editor v%s by WerWolv -", IMHEX_VERSION);
+        if (ImGui::BeginPopupModal(View::toWindowName("hex.view.help.about.name").c_str(), &this->m_aboutWindowOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("ImHex Hex Editor v%s by WerWolv - " ICON_FA_CODE_BRANCH, IMHEX_VERSION);
             #if defined(GIT_BRANCH) && defined(GIT_COMMIT_HASH)
                 ImGui::SameLine();
-                if (ImGui::Hyperlink(hex::format("%s@%s", GIT_BRANCH, GIT_COMMIT_HASH).c_str()))
+                if (ImGui::Hyperlink(hex::format("{0}@{1}", GIT_BRANCH, GIT_COMMIT_HASH).c_str()))
                     hex::openWebpage("https://github.com/WerWolv/ImHex/commit/" GIT_COMMIT_HASH);
             #endif
+            ImGui::TextUnformatted("hex.view.help.about.translator"_lang);
 
 
-            ImGui::TextUnformatted("Source code available on GitHub:"); ImGui::SameLine();
+            ImGui::TextUnformatted("hex.view.help.about.source"_lang); ImGui::SameLine();
             if (ImGui::Hyperlink("WerWolv/ImHex"))
                 hex::openWebpage("https://github.com/WerWolv/ImHex");
             ImGui::NewLine();
 
-            ImGui::Text("Donations");
+            ImGui::TextUnformatted("hex.view.help.about.donations"_lang);
             ImGui::Separator();
 
             constexpr const char* Links[] = { "https://werwolv.net/donate", "https://www.patreon.com/werwolv", "https://github.com/sponsors/WerWolv" };
 
-            ImGui::TextWrapped("If you like my work, please consider donating to keep the project going. Thanks a lot <3");
+            ImGui::TextWrapped("hex.view.help.about.thanks"_lang);
 
             ImGui::NewLine();
 
@@ -59,27 +59,69 @@ namespace hex {
             }
             ImGui::NewLine();
 
-            ImGui::Text("Libraries used");
+            const auto Link = [](std::string_view label, std::string_view url) {
+                if (ImGui::BulletHyperlink(label.data()))
+                    hex::openWebpage(url.data());
+            };
+
+            ImGui::TextUnformatted("hex.view.help.about.libs"_lang);
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.2F, 0.2F, 0.2F, 0.3F));
-            ImGui::BulletText("ImGui by ocornut");
-            ImGui::BulletText("imgui_club by ocornut");
-            ImGui::BulletText("ImGui-Addons by gallickgunner");
-            ImGui::BulletText("ImGuiColorTextEdit by BalazsJako");
-            ImGui::BulletText("capstone by aquynh");
-            ImGui::BulletText("JSON for Modern C++ by nlohmann");
+            Link("ImGui by ocornut", "https://github.com/ocornut/imgui");
+            Link("imgui_club by ocornut", "https://github.com/ocornut/imgui_club");
+            Link("imnodes by Nelarius", "https://github.com/Nelarius/imnodes");
+            Link("ImGuiColorTextEdit by BalazsJako", "https://github.com/BalazsJako/ImGuiColorTextEdit");
+            Link("ImPlot by epezent", "https://github.com/epezent/implot");
+            Link("capstone by aquynh", "https://github.com/aquynh/capstone");
+            Link("JSON for Modern C++ by nlohmann", "https://github.com/nlohmann/json");
+            Link("YARA by VirusTotal", "https://github.com/VirusTotal/yara");
+            Link("Native File Dialog Extended by btzy and mlabbe", "https://github.com/btzy/nativefiledialog-extended");
             ImGui::NewLine();
-            ImGui::BulletText("GNU libmagic");
-            ImGui::BulletText("OpenSSL libcrypto");
-            ImGui::BulletText("GLFW3");
-            ImGui::BulletText("LLVM");
-            ImGui::BulletText("Python 3");
-            ImGui::BulletText("FreeType");
+            Link("GNU libmagic", "http://www.darwinsys.com/file/");
+            Link("GLFW3", "https://github.com/glfw/glfw");
+            Link("LLVM", "https://github.com/llvm/llvm-project");
+            Link("Python 3", "https://github.com/python/cpython");
+            Link("FreeType", "https://gitlab.freedesktop.org/freetype/freetype");
+            Link("Mbed TLS", "https://github.com/ARMmbed/mbedtls");
 
             ImGui::PopStyleColor();
 
             if (ImGui::IsKeyDown(ImGui::GetKeyIndex(ImGuiKey_Escape)))
                 ImGui::CloseCurrentPopup();
+
+            ImGui::NewLine();
+            ImGui::TextUnformatted("hex.view.help.about.paths"_lang);
+            ImGui::Separator();
+
+            if (ImGui::BeginTable("##imhex_paths", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Type");
+                ImGui::TableSetupColumn("Paths");
+
+                constexpr std::array<std::pair<const char*, ImHexPath>, 8> PathTypes = {{
+                    { "Resources", ImHexPath::Resources },
+                    { "Config", ImHexPath::Config },
+                    { "Magic", ImHexPath::Magic },
+                    { "Patterns", ImHexPath::Patterns },
+                    { "Patterns Includes", ImHexPath::PatternsInclude },
+                    { "Plugins", ImHexPath::Plugins },
+                    { "Python Scripts", ImHexPath::Python },
+                    { "Yara Patterns", ImHexPath::Yara }
+                }};
+
+                ImGui::TableHeadersRow();
+                for (const auto &[name, type] : PathTypes) {
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(name);
+
+                    ImGui::TableNextColumn();
+                    for (auto &path : hex::getPath(type))
+                        ImGui::TextUnformatted(path.c_str());
+                }
+
+                ImGui::EndTable();
+            }
 
             ImGui::EndPopup();
         }
@@ -89,7 +131,7 @@ namespace hex {
         if (!this->m_patternHelpWindowOpen) return;
 
         ImGui::SetNextWindowSizeConstraints(ImVec2(450, 300), ImVec2(2000, 1000));
-        if (ImGui::Begin("Pattern Language Cheat Sheet", &this->m_patternHelpWindowOpen)) {
+        if (ImGui::Begin(View::toWindowName("hex.view.help.pattern_cheat_sheet").c_str(), &this->m_patternHelpWindowOpen)) {
             ImGui::Text("ImHex Pattern Language Cheat Sheet");
             ImGui::Separator();
             ImGui::NewLine();
@@ -231,7 +273,7 @@ namespace hex {
         if (!this->m_mathHelpWindowOpen) return;
 
         ImGui::SetNextWindowSizeConstraints(ImVec2(450, 300), ImVec2(2000, 1000));
-        if (ImGui::Begin("Calculator Cheat Sheet", &this->m_mathHelpWindowOpen)) {
+        if (ImGui::Begin(View::toWindowName("hex.view.help.calc_cheat_sheet").c_str(), &this->m_mathHelpWindowOpen)) {
             ImGui::Text("ImHex Math Evaluator Cheat Sheet");
             ImGui::Separator();
             ImGui::NewLine();
@@ -303,23 +345,29 @@ namespace hex {
     }
 
     void ViewHelp::drawContent() {
+        if (!this->m_aboutWindowOpen && !this->m_mathHelpWindowOpen && !this->m_patternHelpWindowOpen)
+            this->getWindowOpenState() = false;
+
         this->drawAboutPopup();
         this->drawPatternHelpPopup();
         this->drawMathEvaluatorHelp();
     }
 
     void ViewHelp::drawMenu() {
-        if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("About", "")) {
-                View::doLater([] { ImGui::OpenPopup("About"); });
+        if (ImGui::BeginMenu("hex.menu.help"_lang)) {
+            if (ImGui::MenuItem("hex.view.help.about.name"_lang, "")) {
+                View::doLater([] { ImGui::OpenPopup(View::toWindowName("hex.view.help.about.name").c_str()); });
                 this->m_aboutWindowOpen = true;
+                this->getWindowOpenState() = true;
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Pattern Language Cheat Sheet", "")) {
+            if (ImGui::MenuItem("hex.view.help.pattern_cheat_sheet"_lang, "")) {
                 this->m_patternHelpWindowOpen = true;
+                this->getWindowOpenState() = true;
             }
-            if (ImGui::MenuItem("Calculator Cheat Sheet", "")) {
+            if (ImGui::MenuItem("hex.view.help.calc_cheat_sheet"_lang, "")) {
                 this->m_mathHelpWindowOpen = true;
+                this->getWindowOpenState() = true;
             }
             ImGui::EndMenu();
         }

@@ -5,6 +5,7 @@
 #include <bit>
 #include <optional>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace hex::lang {
@@ -55,11 +56,7 @@ namespace hex::lang {
         }
 
         [[nodiscard]] const auto& getValue() const {
-            return this->m_literal.second;
-        }
-
-        [[nodiscard]] Token::ValueType getType() const {
-            return this->m_literal.first;
+            return this->m_literal;
         }
 
     private:
@@ -149,7 +146,10 @@ namespace hex::lang {
 
         ASTNodeTypeDecl(const ASTNodeTypeDecl& other) : ASTNode(other), Attributable(other) {
             this->m_name = other.m_name;
-            this->m_type = other.m_type->clone();
+            if (other.m_type != nullptr)
+                this->m_type = other.m_type->clone();
+            else
+                this->m_type = nullptr;
             this->m_endian = other.m_endian;
         }
 
@@ -188,6 +188,7 @@ namespace hex::lang {
 
         ~ASTNodeVariableDecl() override {
             delete this->m_type;
+            delete this->m_placementOffset;
         }
 
         [[nodiscard]] ASTNode* clone() const override {
@@ -226,6 +227,7 @@ namespace hex::lang {
         ~ASTNodeArrayVariableDecl() override {
             delete this->m_type;
             delete this->m_size;
+            delete this->m_placementOffset;
         }
 
         [[nodiscard]] ASTNode* clone() const override {
@@ -262,6 +264,8 @@ namespace hex::lang {
 
         ~ASTNodePointerVariableDecl() override {
             delete this->m_type;
+            delete this->m_sizeType;
+            delete this->m_placementOffset;
         }
 
         [[nodiscard]] ASTNode* clone() const override {
@@ -387,20 +391,29 @@ namespace hex::lang {
 
     class ASTNodeRValue : public ASTNode {
     public:
-        explicit ASTNodeRValue(std::vector<std::string> path) : ASTNode(), m_path(std::move(path)) { }
+        using Path = std::vector<std::variant<std::string, ASTNode*>>;
+
+        explicit ASTNodeRValue(Path path) : ASTNode(), m_path(std::move(path)) { }
 
         ASTNodeRValue(const ASTNodeRValue&) = default;
+
+        ~ASTNodeRValue() override {
+            for (auto &part : this->m_path) {
+                if (auto node = std::get_if<ASTNode*>(&part); node != nullptr)
+                    delete *node;
+            }
+        }
 
         [[nodiscard]] ASTNode* clone() const override {
             return new ASTNodeRValue(*this);
         }
 
-        const std::vector<std::string>& getPath() {
+        const Path& getPath() {
             return this->m_path;
         }
 
     private:
-        std::vector<std::string> m_path;
+        Path m_path;
     };
 
     class ASTNodeScopeResolution : public ASTNode {
@@ -465,6 +478,39 @@ namespace hex::lang {
         std::vector<ASTNode*> m_trueBody, m_falseBody;
     };
 
+    class ASTNodeWhileStatement : public ASTNode {
+    public:
+        explicit ASTNodeWhileStatement(ASTNode *condition, std::vector<ASTNode*> body)
+            : ASTNode(), m_condition(condition), m_body(std::move(body)) { }
+
+        ~ASTNodeWhileStatement() override {
+            delete this->m_condition;
+
+            for (auto &statement : this->m_body)
+                delete statement;
+        }
+
+        ASTNodeWhileStatement(const ASTNodeWhileStatement &other) : ASTNode(other) {
+            this->m_condition = other.m_condition->clone();
+        }
+
+        [[nodiscard]] ASTNode* clone() const override {
+            return new ASTNodeWhileStatement(*this);
+        }
+
+        [[nodiscard]] ASTNode* getCondition() {
+            return this->m_condition;
+        }
+
+        [[nodiscard]] const std::vector<ASTNode*>& getBody() {
+            return this->m_body;
+        }
+
+    private:
+        ASTNode *m_condition;
+        std::vector<ASTNode*> m_body;
+    };
+
     class ASTNodeFunctionCall : public ASTNode {
     public:
         explicit ASTNodeFunctionCall(std::string_view functionName, std::vector<ASTNode*> params)
@@ -523,7 +569,7 @@ namespace hex::lang {
 
     class ASTNodeAttribute : public ASTNode {
     public:
-        explicit ASTNodeAttribute(std::string_view attribute, std::string_view value = { })
+        explicit ASTNodeAttribute(std::string_view attribute, std::optional<std::string_view> value = { })
             : ASTNode(), m_attribute(attribute), m_value(value) { }
 
         ~ASTNodeAttribute() override = default;
@@ -550,4 +596,136 @@ namespace hex::lang {
         std::optional<std::string> m_value;
     };
 
+    class ASTNodeTypeOperator : public ASTNode {
+    public:
+        ASTNodeTypeOperator(Token::Operator op, ASTNode *expression) : m_op(op), m_expression(expression) {
+
+        }
+
+        ASTNodeTypeOperator(const ASTNodeTypeOperator &other) : ASTNode(other) {
+            this->m_op = other.m_op;
+            this->m_expression = other.m_expression->clone();
+        }
+
+        [[nodiscard]] ASTNode* clone() const override {
+            return new ASTNodeTypeOperator(*this);
+        }
+
+        ~ASTNodeTypeOperator() override {
+            delete this->m_expression;
+        }
+
+        Token::Operator getOperator() const {
+            return this->m_op;
+        }
+
+        ASTNode* getExpression() const {
+            return this->m_expression;
+        }
+
+    private:
+        Token::Operator m_op;
+        ASTNode *m_expression;
+    };
+
+    class ASTNodeFunctionDefinition : public ASTNode {
+    public:
+        ASTNodeFunctionDefinition(std::string name, std::vector<std::string> params, std::vector<ASTNode*> body)
+            : m_name(std::move(name)), m_params(std::move(params)), m_body(std::move(body)) {
+
+        }
+
+        ASTNodeFunctionDefinition(const ASTNodeFunctionDefinition &other) : ASTNode(other) {
+            this->m_name = other.m_name;
+            this->m_params = other.m_params;
+
+            for (auto statement : other.m_body) {
+                this->m_body.push_back(statement->clone());
+            }
+        }
+
+        [[nodiscard]] ASTNode* clone() const override {
+            return new ASTNodeFunctionDefinition(*this);
+        }
+
+        ~ASTNodeFunctionDefinition() override {
+            for (auto statement : this->m_body)
+                delete statement;
+        }
+
+        [[nodiscard]] std::string_view getName() const {
+            return this->m_name;
+        }
+
+        [[nodiscard]] const auto& getParams() const {
+            return this->m_params;
+        }
+
+        [[nodiscard]] const auto& getBody() const {
+            return this->m_body;
+        }
+
+    private:
+        std::string m_name;
+        std::vector<std::string> m_params;
+        std::vector<ASTNode*> m_body;
+    };
+
+    class ASTNodeAssignment : public ASTNode {
+    public:
+        ASTNodeAssignment(std::string lvalueName, ASTNode *rvalue) : m_lvalueName(std::move(lvalueName)), m_rvalue(rvalue) {
+
+        }
+
+        ASTNodeAssignment(const ASTNodeAssignment &other) : ASTNode(other) {
+            this->m_lvalueName = other.m_lvalueName;
+            this->m_rvalue = other.m_rvalue->clone();
+        }
+
+        [[nodiscard]] ASTNode* clone() const override {
+            return new ASTNodeAssignment(*this);
+        }
+
+        ~ASTNodeAssignment() override {
+            delete this->m_rvalue;
+        }
+
+        [[nodiscard]] std::string_view getLValueName() const {
+            return this->m_lvalueName;
+        }
+
+        [[nodiscard]] ASTNode* getRValue() const {
+            return this->m_rvalue;
+        }
+
+    private:
+        std::string m_lvalueName;
+        ASTNode *m_rvalue;
+    };
+
+    class ASTNodeReturnStatement : public ASTNode {
+    public:
+        ASTNodeReturnStatement(ASTNode *rvalue) : m_rvalue(rvalue) {
+
+        }
+
+        ASTNodeReturnStatement(const ASTNodeReturnStatement &other) : ASTNode(other) {
+            this->m_rvalue = other.m_rvalue->clone();
+        }
+
+        [[nodiscard]] ASTNode* clone() const override {
+            return new ASTNodeReturnStatement(*this);
+        }
+
+        ~ASTNodeReturnStatement() override {
+            delete this->m_rvalue;
+        }
+
+        [[nodiscard]] ASTNode* getRValue() const {
+            return this->m_rvalue;
+        }
+
+    private:
+        ASTNode *m_rvalue;
+    };
 }

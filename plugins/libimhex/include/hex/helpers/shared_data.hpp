@@ -4,15 +4,14 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include <hex/api/content_registry.hpp>
 #include <hex/api/imhex_api.hpp>
-#include <hex/api/event.hpp>
 #include <hex/views/view.hpp>
 
 #include <imgui.h>
-#include <ImGuiFileBrowser.h>
 
 #include <nlohmann/json.hpp>
 
@@ -25,6 +24,10 @@ namespace hex::plugin::internal {
 namespace hex {
 
     namespace prv { class Provider; }
+    namespace dp { class Node; }
+    namespace lang { class PatternData; }
+
+    class View;
 
     class SharedData {
         SharedData() = default;
@@ -45,13 +48,10 @@ namespace hex {
         }
 
     public:
-        static std::vector<EventHandler> eventHandlers;
         static std::vector<std::function<void()>> deferredCalls;
         static prv::Provider *currentProvider;
         static std::map<std::string, std::vector<ContentRegistry::Settings::Entry>> settingsEntries;
         static nlohmann::json settingsJson;
-        static std::map<std::string, Events> customEvents;
-        static u32 customEventsLastId;
         static std::vector<ContentRegistry::CommandPaletteCommands::Entry> commandPaletteCommands;
         static std::map<std::string, ContentRegistry::PatternLanguageFunctions::Function> patternLanguageFunctions;
         static std::vector<View*> views;
@@ -60,12 +60,21 @@ namespace hex {
         static u32 patternPaletteOffset;
         static std::string errorPopupMessage;
         static std::list<ImHexApi::Bookmarks::Entry> bookmarkEntries;
+        static std::vector<lang::PatternData*> patternData;
 
-        static imgui_addons::ImGuiFileBrowser fileBrowser;
-        static imgui_addons::ImGuiFileBrowser::DialogMode fileBrowserDialogMode;
-        static std::string fileBrowserTitle;
-        static std::string fileBrowserValidExtensions;
-        static std::function<void(std::string)> fileBrowserCallback;
+        static std::map<std::string, std::string> languageNames;
+        static std::map<std::string, std::vector<LanguageDefinition>> languageDefinitions;
+        static std::map<std::string, std::string> loadedLanguageStrings;
+
+        static std::vector<ContentRegistry::Interface::DrawCallback> welcomeScreenEntries;
+        static std::vector<ContentRegistry::Interface::DrawCallback> footerItems;
+
+        static std::vector<ContentRegistry::DataProcessorNode::Entry> dataProcessorNodes;
+        static u32 dataProcessorNodeIdCounter;
+        static u32 dataProcessorLinkIdCounter;
+        static u32 dataProcessorAttrIdCounter;
+
+        static std::list<std::string> recentFilePaths;
 
         static int mainArgc;
         static char **mainArgv;

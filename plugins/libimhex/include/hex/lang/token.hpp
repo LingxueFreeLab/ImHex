@@ -31,7 +31,11 @@ namespace hex::lang {
             LittleEndian,
             BigEndian,
             If,
-            Else
+            Else,
+            Parent,
+            While,
+            Function,
+            Return
         };
 
         enum class Operator {
@@ -60,7 +64,9 @@ namespace hex::lang {
             BoolXor,
             BoolNot,
             TernaryConditional,
-            Dollar
+            Dollar,
+            AddressOf,
+            SizeOf
         };
 
         enum class ValueType {
@@ -75,6 +81,7 @@ namespace hex::lang {
             Unsigned128Bit      = 0x100,
             Signed128Bit        = 0x101,
             Character           = 0x13,
+            Character16         = 0x23,
             Boolean             = 0x14,
             Float               = 0x42,
             Double              = 0x82,
@@ -102,7 +109,7 @@ namespace hex::lang {
             EndOfProgram
         };
 
-        using IntegerLiteral = std::pair<ValueType, std::variant<u8, s8, u16, s16, u32, s32, u64, s64, u128, s128, float, double>>;
+        using IntegerLiteral = std::variant<char, bool, u8, s8, u16, s16, u32, s32, u64, s64, u128, s128, float, double>;
         using ValueTypes = std::variant<Keyword, std::string, Operator, IntegerLiteral, ValueType, Separator>;
 
         Token(Type type, auto value, u32 lineNumber) : type(type), value(value), lineNumber(lineNumber) {
@@ -140,6 +147,7 @@ namespace hex::lang {
                 case ValueType::Float:          return "float";
                 case ValueType::Double:         return "double";
                 case ValueType::Character:      return "char";
+                case ValueType::Character16:    return "char16";
                 default:                        return "< ??? >";
             }
         }
@@ -196,8 +204,12 @@ namespace hex::lang {
 #define KEYWORD_BE                          COMPONENT(Keyword, BigEndian)
 #define KEYWORD_IF                          COMPONENT(Keyword, If)
 #define KEYWORD_ELSE                        COMPONENT(Keyword, Else)
+#define KEYWORD_PARENT                      COMPONENT(Keyword, Parent)
+#define KEYWORD_WHILE                       COMPONENT(Keyword, While)
+#define KEYWORD_FUNCTION                    COMPONENT(Keyword, Function)
+#define KEYWORD_RETURN                      COMPONENT(Keyword, Return)
 
-#define INTEGER                             hex::lang::Token::Type::Integer, hex::lang::Token::IntegerLiteral(hex::lang::Token::ValueType::Any, u64(0))
+#define INTEGER                             hex::lang::Token::Type::Integer, hex::lang::Token::IntegerLiteral(u64(0))
 #define IDENTIFIER                          hex::lang::Token::Type::Identifier, ""
 #define STRING                              hex::lang::Token::Type::String, ""
 
@@ -227,6 +239,8 @@ namespace hex::lang {
 #define OPERATOR_BOOLNOT                    COMPONENT(Operator, BoolNot)
 #define OPERATOR_TERNARYCONDITIONAL         COMPONENT(Operator, TernaryConditional)
 #define OPERATOR_DOLLAR                     COMPONENT(Operator, Dollar)
+#define OPERATOR_ADDRESSOF                  COMPONENT(Operator, AddressOf)
+#define OPERATOR_SIZEOF                     COMPONENT(Operator, SizeOf)
 
 #define VALUETYPE_CUSTOMTYPE                COMPONENT(ValueType, CustomType)
 #define VALUETYPE_PADDING                   COMPONENT(ValueType, Padding)
